@@ -1,0 +1,117 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { z } from 'zod'
+import { AgentToolError, defineAgentTool, parseAgentToolResultEnvelope } from '../../ai-utils/core/agentTool'
+
+const createFailingTool = (name: string, execute: () => never) =>
+  defineAgentTool({
+    name,
+    description: 'Test-only failing tool.',
+    inputSchema: z.object({ value: z.string() }),
+    outputSchema: z.object({ ok: z.boolean() }),
+    metadata: {
+      description: { purpose: 'test', whenToUse: ['test'], inputSummary: 'none', outputSummary: 'test result' },
+      display: { visibility: 'hidden' },
+      execution: { level: 'notice', readOnly: false, idempotent: false, completionSemantics: 'definitive' },
+      retention: { context: 'ephemeral' }
+    },
+    execute
+  })
+
+test('invalid tool output returns a non-retryable structured error', async () => {
+  const tool = defineAgentTool({
+    name: 'invalid_output_tool',
+    description: 'Test-only invalid output tool.',
+    inputSchema: z.object({}),
+    outputSchema: z.object({ ok: z.literal(true) }),
+    metadata: {
+      description: { purpose: 'test', whenToUse: ['test'], inputSummary: 'none', outputSummary: 'test result' },
+      display: { visibility: 'hidden' },
+      execution: { level: 'safe', readOnly: true, idempotent: true, completionSemantics: 'definitive' },
+      retention: { context: 'ephemeral' }
+    },
+    execute: () => ({ ok: false }) as never
+  })
+  const envelope = parseAgentToolResultEnvelope(await tool.invoke({}))
+  assert.equal(envelope?.ok, false)
+  assert.equal(envelope?.error?.code, 'INVALID_TOOL_OUTPUT')
+  assert.equal(envelope?.error?.retryable, false)
+  assert.ok(Array.isArray(envelope?.error?.details?.issues))
+})
+
+test('AgentToolError preserves business code, retryability and recovery data', async () => {
+  const tool = createFailingTool('not_found_tool', () => {
+    throw new AgentToolError({
+      code: 'NOT_FOUND',
+      message: '目标文档不存在。',
+      retryable: false,
+      details: { documentId: 'missing-document' },
+      nextSuggestions: ['重新查询文档目录。']
+    })
+  })
+  const envelope = parseAgentToolResultEnvelope(await tool.invoke({ value: 'x' }))
+  assert.equal(envelope?.error?.code, 'NOT_FOUND')
+  assert.equal(envelope?.error?.retryable, false)
+  assert.deepEqual(envelope?.error?.details, { documentId: 'missing-document' })
+  assert.deepEqual(envelope?.nextSuggestions, ['重新查询文档目录。'])
+})
+
+test('document revision conflicts are normalized without domain coupling', async () => {
+  class RevisionConflictError extends Error {
+    readonly code = 'DOCUMENT_REVISION_CONFLICT'
+    constructor(
+      readonly documentId: string,
+      readonly expectedRevision: number,
+      readonly currentRevision: number
+    ) {
+      super('revision mismatch')
+    }
+  }
+
+  const tool = createFailingTool('revision_conflict_tool', () => {
+    throw new RevisionConflictError('document-a', 2, 3)
+  })
+  const envelope = parseAgentToolResultEnvelope(await tool.invoke({ value: 'x' }))
+  assert.equal(envelope?.error?.code, 'REVISION_CONFLICT')
+  assert.equal(envelope?.error?.retryable, true)
+  assert.deepEqual(envelope?.error?.details, {
+    documentId: 'document-a',
+    expectedRevision: 2,
+    currentRevision: 3
+  })
+})
+
+test('closed document change sets return a deterministic non-retryable conflict', async () => {
+  class ChangeSetClosedError extends Error {
+    readonly code = 'CHANGESET_CLOSED'
+    readonly retryable = false
+    constructor(
+      readonly changeSetId: string,
+      readonly worldId: string,
+      readonly commitId: string
+    ) {
+      super('change set is closed')
+    }
+  }
+
+  const tool = createFailingTool('closed_change_set_tool', () => {
+    throw new ChangeSetClosedError('turn:7', 'world-a', 'commit-a')
+  })
+  const envelope = parseAgentToolResultEnvelope(await tool.invoke({ value: 'x' }))
+  assert.equal(envelope?.error?.code, 'CHANGESET_CLOSED')
+  assert.equal(envelope?.error?.retryable, false)
+  assert.deepEqual(envelope?.error?.details, {
+    changeSetId: 'turn:7',
+    worldId: 'world-a',
+    commitId: 'commit-a'
+  })
+})
+
+test('unknown exceptions become non-retryable internal errors', async () => {
+  const tool = createFailingTool('internal_error_tool', () => {
+    throw new Error('unexpected failure')
+  })
+  const envelope = parseAgentToolResultEnvelope(await tool.invoke({ value: 'x' }))
+  assert.equal(envelope?.error?.code, 'INTERNAL_ERROR')
+  assert.equal(envelope?.error?.retryable, false)
+})

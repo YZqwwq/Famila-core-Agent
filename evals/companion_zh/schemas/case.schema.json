@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "conversation_id": {
+      "type": "string"
+    },
+    "family": {
+      "type": "string"
+    },
+    "split": {
+      "type": "string",
+      "const": "dev"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "replay",
+        "interactive",
+        "longitudinal"
+      ]
+    },
+    "source": {
+      "type": "string",
+      "const": "original"
+    },
+    "dimensions": {
+      "minItems": 1,
+      "maxItems": 4,
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "naturalness",
+          "context_fit",
+          "emotional_fit",
+          "non_intrusion",
+          "persona",
+          "memory"
+        ]
+      }
+    },
+    "rubric": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "events": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "known_at": {
+            "type": "number"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "session",
+          "known_at",
+          "text"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "probe_at": {
+      "type": "number"
+    },
+    "expected_fact": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "conversation_id",
+    "family",
+    "split",
+    "mode",
+    "source",
+    "dimensions",
+    "rubric",
+    "events",
+    "probe_at"
+  ],
+  "additionalProperties": false
+}

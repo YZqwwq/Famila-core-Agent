@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "case_id": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "agent_error",
+        "timeout",
+        "unsupported"
+      ]
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "mock",
+        "agent"
+      ]
+    },
+    "output": {
+      "type": "string"
+    },
+    "latency_ms": {
+      "type": "number",
+      "minimum": 0
+    },
+    "context_hash": {
+      "type": "string"
+    },
+    "error": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "case_id",
+    "status",
+    "mode",
+    "output",
+    "latency_ms",
+    "context_hash"
+  ],
+  "additionalProperties": false
+}

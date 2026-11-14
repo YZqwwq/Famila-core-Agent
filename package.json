@@ -1,0 +1,91 @@
+{
+  "name": "famila-core-agent",
+  "version": "0.1.0",
+  "description": "Standalone TypeScript Famila agent harness with LangGraph, persistent memory and Fastify.",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./types/*": {
+      "types": "./dist/share/cache/AItype/states/*.d.ts",
+      "default": "./dist/share/cache/AItype/states/*.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime/familaRuntime.d.ts",
+      "default": "./dist/runtime/familaRuntime.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "default": "./dist/server.js"
+    },
+    "./hdsi": {
+      "types": "./dist/runtime/hdsi/hdsiRuntime.d.ts",
+      "default": "./dist/runtime/hdsi/hdsiRuntime.js"
+    },
+    "./engines": {
+      "types": "./dist/runtime/startRuntime.d.ts",
+      "default": "./dist/runtime/startRuntime.js"
+    }
+  },
+  "files": [
+    "dist",
+    "resources",
+    "README.md",
+    "docs",
+    "examples",
+    ".env.example",
+    "extraction-manifest.json",
+    "vendor/hdsi"
+  ],
+  "engines": {
+    "node": ">=20.19.5"
+  },
+  "scripts": {
+    "test:companion": "node scripts/companion-eval.cjs",
+    "build": "tsc -p tsconfig.json && tsc-alias -p tsconfig.json && node scripts/build-hdsi.cjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node scripts/test.cjs",
+    "check:boundaries": "node scripts/check-boundaries.cjs",
+    "test:smoke": "npm run build && node --test tests/*.test.cjs",
+    "start": "node dist/bin/server.js",
+    "chat": "node dist/bin/chat.js"
+  },
+  "dependencies": {
+    "@langchain/anthropic": "1.1.1",
+    "@langchain/core": "1.1.8",
+    "@langchain/langgraph": "1.0.2",
+    "@langchain/openai": "1.1.2",
+    "@node-rs/jieba": "2.0.1",
+    "better-sqlite3": "12.4.1",
+    "fastify": "5.12.8",
+    "reflect-metadata": "0.2.2",
+    "typeorm": "0.3.28",
+    "wink-bm25-text-search": "3.1.2",
+    "zod": "4.1.13",
+    "koishi": "4.18.7",
+    "@minatojs/driver-sqlite": "4.7.0",
+    "qface": "1.4.1",
+    "undici": "7.30.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.0",
+    "esbuild": "0.25.12",
+    "sql.js": "1.13.0",
+    "tsc-alias": "1.8.16",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "@langchain/langgraph-checkpoint": "1.0.0",
+    "@langchain/langgraph-sdk": "1.0.0",
+    "langsmith": "0.5.11"
+  },
+  "bin": {
+    "famila-agent": "dist/bin/chat.js",
+    "famila-agent-server": "dist/bin/server.js"
+  }
+}

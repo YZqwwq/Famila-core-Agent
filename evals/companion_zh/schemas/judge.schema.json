@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "case_id": {
+      "type": "string"
+    },
+    "scores": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "enum": [
+          "naturalness",
+          "context_fit",
+          "emotional_fit",
+          "non_intrusion",
+          "persona",
+          "memory"
+        ]
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "score": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "score",
+          "reason",
+          "evidence"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "critical_violation": {
+      "type": "boolean"
+    },
+    "judge_model": {
+      "type": "string"
+    },
+    "rubric_version": {
+      "type": "string",
+      "const": "1.0"
+    }
+  },
+  "required": [
+    "case_id",
+    "scores",
+    "critical_violation",
+    "judge_model",
+    "rubric_version"
+  ],
+  "additionalProperties": false
+}

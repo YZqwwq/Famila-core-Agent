@@ -1,0 +1,77 @@
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn } from 'typeorm'
+import type { MainAgentMessageStatus } from '@share/cache/AItype/states/mainAgentTurnState'
+
+@Entity('message')
+export class Message {
+  // 主键，自增
+  @PrimaryGeneratedColumn()
+  id!: number
+
+  // 角色：用户、AI 主体或独立系统通知
+  @Column({
+    type: 'text', // SQLite 中 text 类型兼容性最好
+    nullable: false
+  })
+  role!: 'user' | 'ai' | 'system'
+
+  // 消息内容
+  @Column({
+    type: 'text',
+    nullable: false
+  })
+  content!: string
+
+  @Column({
+    type: 'text',
+    default: '[]'
+  })
+  contentJson!: string
+
+  // 消息类型：text 或 structured
+  @Column({
+    type: 'text',
+    default: 'text'
+  })
+  type!: string
+
+  @Column({
+    type: 'text',
+    nullable: true
+  })
+  requestId!: string | null
+
+  // 会话 ID，用于关联消息（某次任务或对话）
+  @Column({
+    type: 'text',
+    default: 'default'
+  })
+  sessionId!: string
+
+  @Column({
+    type: 'integer',
+    nullable: true
+  })
+  turnId!: number | null
+
+  @Column({
+    type: 'text',
+    default: 'committed'
+  })
+  status!: MainAgentMessageStatus
+
+  @Column({
+    type: 'text',
+    nullable: true
+  })
+  eventId!: string | null
+
+  @Column({
+    type: 'text',
+    nullable: true
+  })
+  consumer!: string | null
+
+  // 创建时间
+  @CreateDateColumn()
+  createdAt!: Date
+}

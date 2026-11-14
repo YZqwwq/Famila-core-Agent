@@ -1,0 +1,9 @@
+# Specification for the next live adapter; current CLI runs offline smoke only.
+mode: mock
+data: evals/companion_zh/data/seed_zh.jsonl
+out: evals/companion_zh/reports/smoke
+allow_live: false
+max_cost_usd: 0
+judge: null
+split: dev
+calibration: not_calibrated

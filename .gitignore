@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.generated/
+evals/companion_zh/reports/
+.famila/
+*.tsbuildinfo
+*.log
+.extract.cjs
+.env
+.env.*
+!.env.example

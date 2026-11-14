@@ -1,0 +1,92 @@
+
+import type { AgentTraceRecord } from './agentTrace'
+
+// 统一 AI 富结构内容类型定义（供主/渲染进程共享）
+
+export interface TextPart {
+  type: 'text'
+  text: string
+}
+
+export interface CodePart {
+  type: 'code'
+  code: string
+  language?: string
+}
+
+export interface ListPart {
+  type: 'list'
+  items: string[]
+  ordered?: boolean
+}
+
+export interface HeadingPart {
+  type: 'heading'
+  text: string
+  level?: number
+}
+
+export interface BlockquotePart {
+  type: 'blockquote'
+  text: string
+}
+
+export interface ErrorPart {
+  type: 'error'
+  message: string
+}
+
+// 其它未识别类型，使用 JSON 字符串保留原数据，避免 any/unknown
+export interface OtherPart {
+  type: 'other'
+  json: string
+}
+
+export type AIContentPart =
+  | TextPart
+  | CodePart
+  | ListPart
+  | HeadingPart
+  | BlockquotePart
+  | ErrorPart
+  | OtherPart
+
+export type AIStructuredResponse = AIContentPart[]
+
+// ==========================================
+// 新增：流式传输协议定义
+// ==========================================
+
+export type AgentStageStatus = 'start' | 'running' | 'done' | 'error'
+
+export interface AgentStageChunk {
+  type: 'agent_stage'
+  stageId: string
+  label: string
+  status: AgentStageStatus
+  detail?: string
+}
+
+export interface AgentThoughtChunk {
+  type: 'agent_thought'
+  thoughtId: string
+  text: string
+  sequence: number
+  followsToolResult: boolean
+}
+
+export interface AgentTurnPhaseChunk {
+  type: 'agent_turn_phase'
+  phase: 'thinking' | 'finalizing'
+  label: string
+}
+
+export type StreamChunk =
+  | { type: 'text_delta'; content: string } // 文本增量
+  | { type: 'stream_error'; message: string; sender: 'system'; persisted: boolean } // 独立系统故障通知
+  | { type: 'interrupted'; fullContent: AIContentPart[] }
+  | { type: 'agent_trace'; record: AgentTraceRecord } // 结构化节点日志
+  | AgentStageChunk // 面向用户的执行阶段提示
+  | AgentThoughtChunk // 当前回合内已经形成的自然语言思考结果
+  | AgentTurnPhaseChunk // 当前回合的用户可见阶段
+  | { type: 'done'; fullContent: AIContentPart[] } // 结束信号，携带完整结构化结果
