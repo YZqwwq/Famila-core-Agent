@@ -255,7 +255,10 @@
     "src/share/entity/database/TaskRecord.ts",
     "src/share/entity/database/TaskTraceRecord.ts",
     "src/share/entity/database/ToolUsageStatsRecord.ts",
-    "src/share/utils/error/error.ts"
+    "src/share/utils/error/error.ts",
+    "src/runtime/hdsi/sceneActions.ts",
+    "src/runtime/hdsi/sceneGateway.ts",
+    "src/runtime/hdsi/livingTools.ts"
   ],
   "sourceFiles": [
     "src/main/config/pathConfig.ts",
@@ -553,7 +556,10 @@
     "src/runtime/hdsi/hdsiRuntime.ts",
     "src/runtime/hdsi/worker.ts",
     "src/runtime/startRuntime.ts",
-    "src/server.ts"
+    "src/server.ts",
+    "src/runtime/hdsi/sceneActions.ts",
+    "src/runtime/hdsi/sceneGateway.ts",
+    "src/runtime/hdsi/livingTools.ts"
   ],
   "notes": [
     "Original WorldEdit application remains unchanged.",
@@ -576,7 +582,7 @@
       ]
     },
     "integration": {
-      "passed": 10,
+      "passed": 15,
       "failed": 0,
       "skipped": 0,
       "provider": "local HTTP fixture",
@@ -664,6 +670,35 @@
         "liveCalls": 18,
         "recall": "target facts recovered after compaction and restart with restricted recent context",
         "limitation": "fast skips narrative and emotion updates"
+      },
+      "sceneActions": {
+        "date": "2026-11-15",
+        "kernelModified": false,
+        "localTests": 2,
+        "report": "docs/scene-actions.md",
+        "scope": "outer gateway; time, durable notes and host tool registration",
+        "liveReport": "evals/companion_zh/reports/scene-actions-live-1794735616639",
+        "liveCalls": 7,
+        "outcome": "save, verify read and post-restart read passed; two final native scripts"
+      },
+      "livingTools": {
+        "date": "2026-11-15",
+        "kernelModified": false,
+        "localTests": 2,
+        "reports": [
+          "evals/companion_zh/reports/living-scenes-1794747790542",
+          "evals/companion_zh/reports/living-scenes-1794748046019"
+        ],
+        "scope": "weather, search, daily notes; targeted passes, no final all-five continuous acceptance",
+        "documentation": "docs/living-tools.md"
+      },
+      "weatherProvider": {
+        "date": "2026-11-15",
+        "default": "wttr",
+        "kernelModified": false,
+        "report": "evals/companion_zh/reports/living-scenes-1794756475587",
+        "documentation": "docs/weather-api-evaluation.md",
+        "assessment": "real forecast success; failure reply manually verified, original evaluator false-negative retained"
       }
     }
   },
@@ -917,8 +952,11 @@
     "src/main/services/aiservice/prompt/main_agent/persona/neutralIdentity.ts": "07b249293d09c4a013164575b34a97e43f43c61f10064f8b6b043ddff9a281be",
     "src/main/services/aiservice/prompt/main_agent/persona/conversationTone.ts": "44a4083e97b5ab49b6b96c25a78356f163515bf3b2f6bf7e7344c30f85ed31e6",
     "src/runtime/agentRuntime.ts": "90797d662a51606aaefdea7bda4e4f557f7fe5c9a64136192800c651510d163e",
-    "src/runtime/hdsi/hdsiRuntime.ts": "164adb15e5294c36bd287cc66d944168d4a8dc659980414929d0364886a8f4a1",
-    "src/runtime/hdsi/worker.ts": "601e40552877b9d87037590db5aea4291c5ab4281e8e1e2a6d9f2438699c60e0",
-    "src/runtime/startRuntime.ts": "8d97a9bfb3e1ce3bd086bd00b73904fb8d18c808cb25e9b589b829f6b01f5fb1"
+    "src/runtime/hdsi/hdsiRuntime.ts": "ab868270b7141cb17c20928ab845376565a276f19a2f86cf97c04116e2afda82",
+    "src/runtime/hdsi/worker.ts": "95c8154d1c11200e8724e3a15aeebc43aa63339c7f495d42ef7532dcefc01b13",
+    "src/runtime/startRuntime.ts": "dd643f8877611dee6f94bc86d0eddee71bfb6a784292b16db28592d697a274fe",
+    "src/runtime/hdsi/sceneActions.ts": "b82d8ad9f3ba210fa70e60b2fec927b191e45f5960f58856f688984de5a6c4e1",
+    "src/runtime/hdsi/sceneGateway.ts": "adce2f3a2095fa1d92dca1c6a57d13f2fc342a86f8cfe1106345d7700e872d0b",
+    "src/runtime/hdsi/livingTools.ts": "7fdb5ed6984af303f2990bfe66fcc1f4e1239a0287e970a301fa0d588e2e9681"
   }
 }

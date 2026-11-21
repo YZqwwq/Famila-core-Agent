@@ -4,8 +4,12 @@ import { mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { FamilaCoreOptions } from '../../index'
-import type { AgentRuntime } from '../agentRuntime'
+import type { AgentRuntime, DeliveredBubble } from '../agentRuntime'
 import type { StreamChunk } from '../../share/cache/render/aiagent/aiContent'
+import { SceneGateway } from './sceneGateway'
+import type { SceneActionsOptions } from './sceneActions'
+export type { SceneTool, SceneActionsOptions } from './sceneActions'
+export { createLivingTools, livingToolOptions } from './livingTools'
 
 type Row = { id: string; client_id: string; text: string; status: string }
 type Subscriber = { emit?: (chunk: StreamChunk) => void; resolve: () => void; reject: (error: Error) => void }
@@ -16,6 +20,10 @@ export type HdsiExecutionOptions = {
   evaluation?: boolean
   /** Evaluation only: equalize bubble/typing/debounce settings across engines. */
   normalizedTransport?: boolean
+  /** Outer harness only; HDSI's source and native commit flow are unchanged. */
+  sceneActions?: SceneActionsOptions
+  /** Local evaluation only. Callback never crosses IPC or HTTP. */
+  onDiagnostic?: (text: string) => void
 }
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 
@@ -26,6 +34,7 @@ export class HdsiRuntime implements AgentRuntime {
   private child?: ChildProcess
   private accepting = true
   private subscribers = new Map<string, Set<Subscriber>>()
+  private deliveryWaiters = new Set<() => void>()
   private state = { pendingTurns: 0, backgroundTails: 0, ready: false }
   private sent = new Set<string>()
   private stopping = false
@@ -33,10 +42,12 @@ export class HdsiRuntime implements AgentRuntime {
   private draining?: Promise<void>
   private drainResolved?: () => void
   private childError?: Error
+  private gateway?: SceneGateway
   private inspections = new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void }>()
 
   constructor(private readonly options: FamilaCoreOptions, private readonly execution: HdsiExecutionOptions = { mode: 'native' }) {
     if (execution.mode && !['native', 'fast'].includes(execution.mode)) throw new Error('HDSI mode must be native or fast.')
+    if (execution.sceneActions && execution.mode === 'fast') throw new Error('Scene actions require native HDSI execution.')
     if (options.dataSource || options.databasePath) throw new Error('HDSI owns its database; supply dataDirectory only.')
     if (options.model?.vendor && options.model.vendor !== 'openai') throw new Error('HDSI adapter currently requires an OpenAI-compatible model connection.')
     const directory = resolve(options.dataDirectory, 'hdsi')
@@ -61,17 +72,35 @@ export class HdsiRuntime implements AgentRuntime {
   }
 
   async start(): Promise<this> {
-    const worker = fork(resolve(__dirname, 'worker.js'), [], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+    let workerModel = this.options.model
+    if (this.execution.sceneActions) {
+      try {
+        this.gateway = new SceneGateway(this.options.model ?? {}, resolve(this.options.dataDirectory, 'hdsi/actions.sqlite'), this.execution.sceneActions)
+        workerModel = { ...this.options.model, ...await this.gateway.start() } as typeof workerModel
+      } catch (error) { await this.gateway?.close(); this.release(); throw error }
+    }
+    const diagnostics = this.execution.evaluation && !!this.execution.onDiagnostic
+    const worker = fork(resolve(__dirname, 'worker.js'), [], { stdio: ['ignore', diagnostics ? 'pipe' : 'ignore', 'pipe', 'ipc'],
       env: { ...process.env, HDSI_DESKTOP_BRIDGE: '1' } })
     this.child = worker
     // Upstream diagnostics may contain model material. Do not relay them to HTTP consumers.
-    worker.stderr?.on('data', () => {})
+    const diagnostic = (data: Buffer) => {
+      if (this.execution.evaluation && this.execution.onDiagnostic) {
+        let text = data.toString()
+        for (const secret of [this.options.model?.modelKey, workerModel?.modelKey]) if (secret) text = text.split(secret).join('[redacted]')
+        try { this.execution.onDiagnostic(text) } catch {}
+      }
+    }
+    worker.stderr?.on('data', diagnostic)
+    worker.stdout?.on('data', diagnostic)
     worker.on('message', message => { void this.onMessage(message as any).catch(error => this.fail(error)) })
     worker.on('error', error => this.fail(error))
     worker.on('exit', () => { if (!this.stopping) this.fail(new Error('HDSI worker exited; persisted requests can recover on restart.')) })
     const delivered = this.db.prepare(`SELECT i.id, i.text, o.content, o.created FROM outbox o
       JOIN inbox i ON i.id=o.inbox_id ORDER BY o.created,o.rowid`).all()
-    worker.send({ type: 'famila-start', dataDirectory: resolve(this.options.dataDirectory, 'hdsi'), model: this.options.model, delivered, execution: this.execution })
+    const { sceneActions, onDiagnostic, ...workerExecution } = this.execution
+    worker.send({ type: 'famila-start', dataDirectory: resolve(this.options.dataDirectory, 'hdsi'), model: workerModel, delivered,
+      execution: { ...workerExecution, sceneActionsEnabled: !!sceneActions } })
     const started = Date.now()
     try {
       while (!this.state.ready) {
@@ -82,11 +111,11 @@ export class HdsiRuntime implements AgentRuntime {
       this.db.prepare("UPDATE inbox SET status='completed' WHERE status='delivered'").run()
       for (const row of this.db.prepare("SELECT * FROM inbox WHERE status IN ('queued','processing') ORDER BY created,rowid").all() as Row[]) this.submit(row, true)
       return this
-    } catch (error) { this.stopping = true; worker.kill(); this.release(); throw error }
+    } catch (error) { this.stopping = true; worker.kill(); await this.gateway?.close(); this.release(); throw error }
   }
 
   getStatus() {
-    return { engine: 'hdsi', executionMode: this.execution.mode ?? 'native', accepting: this.accepting && !this.childError,
+    return { engine: 'hdsi', executionMode: this.execution.mode ?? 'native', sceneActionsEnabled: !!this.execution.sceneActions, accepting: this.accepting && !this.childError,
       pendingRequests: this.db.prepare("SELECT count(*) AS n FROM inbox WHERE status IN ('queued','processing','delivered')").get().n as number,
       ...this.state }
   }
@@ -156,14 +185,47 @@ export class HdsiRuntime implements AgentRuntime {
     const key = delivery.intentKey || `${id}:${hash(delivery.content)}`
     // Separator is transport markup, rendered as a line break without rewriting words.
     const content = String(delivery.content).replace(/<sep\s*\/?>/g, '\n')
-    this.db.transaction(() => {
-      this.db.prepare('INSERT OR IGNORE INTO outbox VALUES (?,?,?,?)').run(key, id ?? null, content, Date.now())
+    const inserted = this.db.transaction(() => {
+      const result = this.db.prepare('INSERT OR IGNORE INTO outbox VALUES (?,?,?,?)').run(key, id ?? null, content, Date.now())
       if (id) this.db.prepare("UPDATE inbox SET status=CASE WHEN status='completed' THEN status ELSE 'delivered' END WHERE id=?").run(id)
+      return result.changes
     })()
+    if (inserted) this.wakeDeliveryReaders()
     this.child?.send({ type: 'hdsi-desktop', command: 'delivery-result', value: {
       deliveryId: delivery.deliveryId, status: 'sent', messageIds: [`famila-outbox-${hash(key)}`]
     } })
     // Wait for the native first-reply boundary before completing HTTP streams.
+  }
+
+  private wakeDeliveryReaders() {
+    for (const wake of this.deliveryWaiters) wake()
+  }
+
+  async *deliveries(after: number | undefined, signal: AbortSignal): AsyncIterable<DeliveredBubble> {
+    if (signal.aborted || this.stopping || this.childError) return
+    let cursor: number = after ?? this.db.prepare('SELECT coalesce(max(rowid),0) AS id FROM outbox').get().id
+    if (!Number.isSafeInteger(cursor) || cursor < 0) throw new Error('Invalid delivery cursor.')
+    const read = this.db.prepare(`SELECT o.rowid AS cursor, i.client_id AS requestId, o.content, o.created
+      FROM outbox o LEFT JOIN inbox i ON i.id=o.inbox_id WHERE o.rowid>? ORDER BY o.rowid LIMIT 64`)
+    while (!signal.aborted && !this.stopping && !this.childError) {
+      const rows = read.all(cursor) as DeliveredBubble[]
+      for (const row of rows) {
+        if (signal.aborted || this.stopping || this.childError) return
+        cursor = row.cursor
+        yield row
+      }
+      if (rows.length) continue
+      // Register before yielding control after the empty read.
+      await new Promise<void>(resolve => {
+        const wake = () => {
+          signal.removeEventListener('abort', wake)
+          this.deliveryWaiters.delete(wake)
+          resolve()
+        }
+        this.deliveryWaiters.add(wake)
+        signal.addEventListener('abort', wake, { once: true })
+      })
+    }
   }
 
   private finish(id: string) {
@@ -179,7 +241,7 @@ export class HdsiRuntime implements AgentRuntime {
     for (const subscriber of this.subscribers.get(id) ?? []) subscriber.reject(error)
     this.subscribers.delete(id)
   }
-  private fail(error: Error) { this.childError = error; this.accepting = false; this.drainResolved?.(); for (const id of this.subscribers.keys()) this.failRequest(id, error); for (const pending of this.inspections.values()) pending.reject(error); this.inspections.clear() }
+  private fail(error: Error) { this.childError = error; this.wakeDeliveryReaders(); this.accepting = false; this.drainResolved?.(); for (const id of this.subscribers.keys()) this.failRequest(id, error); for (const pending of this.inspections.values()) pending.reject(error); this.inspections.clear() }
   async evaluate(command: 'snapshot' | 'compact' | 'restrict-context'): Promise<any> {
     if (!this.execution.evaluation) throw new Error('Evaluation access is disabled.')
     if (this.childError || !this.child?.connected) throw this.childError ?? new Error('Worker unavailable.')
@@ -206,11 +268,13 @@ export class HdsiRuntime implements AgentRuntime {
     return this.closing ??= (async () => {
       await this.drain()
       this.stopping = true
+      this.wakeDeliveryReaders()
       if (this.child?.connected) {
         const exited = new Promise<void>(resolvePromise => this.child!.once('exit', () => resolvePromise()))
         this.child.send({ type: 'famila-stop' })
         await exited
       }
+      await this.gateway?.close()
       this.release()
     })()
   }

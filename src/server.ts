@@ -1,6 +1,6 @@
 import Fastify from 'fastify'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
-import { PassThrough } from 'node:stream'
+import { PassThrough, Readable } from 'node:stream'
 import type { AgentRuntime } from './runtime/agentRuntime'
 
 export function createFamilaServer(runtime: AgentRuntime, options: { token?: string; logger?: boolean } = {}) {
@@ -23,6 +23,30 @@ export function createFamilaServer(runtime: AgentRuntime, options: { token?: str
   })
 
   app.get('/health', async () => ({ status: 'ok', ...runtime.getStatus() }))
+  const feeds = new Set<AbortController>()
+  if (runtime.deliveries) {
+    app.get<{ Querystring: { after?: string } }>('/deliveries', (request, reply) => {
+      const raw = request.headers['last-event-id'] ?? request.query.after ?? '0'
+      if (typeof raw !== 'string' || !/^\d+$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
+        return reply.code(400).send({ error: 'Invalid delivery cursor' })
+      }
+      const controller = new AbortController()
+      feeds.add(controller)
+      const stop = () => { controller.abort(); feeds.delete(controller) }
+      reply.raw.once('close', stop)
+      async function* events() {
+        try {
+          yield ': connected\n\n'
+          for await (const bubble of runtime.deliveries!(Number(raw), controller.signal)) {
+            yield `id: ${bubble.cursor}\nevent: bubble\ndata: ${JSON.stringify(bubble)}\n\n`
+          }
+        } finally { stop() }
+      }
+      return reply.header('Content-Type', 'text/event-stream; charset=utf-8')
+        .header('Cache-Control', 'no-cache, no-transform').header('X-Accel-Buffering', 'no')
+        .send(Readable.from(events()))
+    })
+  }
   app.get('/history', async () => runtime.getHistory())
   app.post('/interrupt', async () => runtime.interrupt())
   app.post<{ Body: { text: string; requestId?: string } }>('/messages', {
@@ -68,7 +92,7 @@ export function createFamilaServer(runtime: AgentRuntime, options: { token?: str
     return reply.send(stream)
   })
   // Drain durable work before Fastify waits for open streaming responses to finish.
-  app.addHook('preClose', async () => { await runtime.drain() })
+  app.addHook('preClose', async () => { await runtime.drain(); for (const feed of feeds) feed.abort() })
   app.addHook('onClose', async () => { await runtime.close() })
   return app
 }

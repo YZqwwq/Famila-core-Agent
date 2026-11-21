@@ -59,7 +59,7 @@ async function start(input: any) {
       model: model.model, endpoint: model.baseURL.replace(/\/$/, '') + '/chat/completions', apiKey: model.modelKey ?? '',
       useForMain: true, useForCompaction: true, useForAlter: true,
       extraBody: JSON.stringify({ enable_thinking: false }) }],
-      mainMaxTokens: 2048, mainTimeout: 30000, mainStreamingMode: fast ? 'experimental' : 'off',
+      mainMaxTokens: 2048, mainTimeout: execution.sceneActionsEnabled ? 120000 : 30000, mainStreamingMode: fast ? 'experimental' : 'off',
       failover: { enabled: false, maxAttemptsPerProvider: 1 } },
     runtime: { autoCreate: true, autoAdvanceEnabled: false,
       ...(fast || normalizedTransport ? { userMessageDebounceSeconds: 0.1, typingBaseDelaySeconds: 0,
@@ -118,6 +118,14 @@ async function start(input: any) {
         occurredAt: new Date(delivered.created).toISOString(), metadata: { visible: true, recoveredFromOutbox: true, familaRequestId: delivered.id } }, new Date(delivered.created), source.participantId)
     }
   }
+  // Process timers disappear on shutdown. Re-arm the native delivery timer for
+  // persisted split messages; HDSI still owns their contents, timing and cancellation.
+  const pendingSegments = await app.database.get('interlude_intent' as any, { status: 'pending', type: 'split-message' }, ['storyId']) as { storyId: string }[]
+  if (pendingSegments.length) {
+    await service.ensureEndpointRegistry()
+    service.noteEndpointConnection('sandbox:famila', true)
+  }
+  for (const storyId of new Set(pendingSegments.map(row => row.storyId))) await service.scheduleNextSplitWake(storyId)
   ready = true
   timer = setInterval(heartbeat, 50)
   heartbeat()

@@ -1,10 +1,20 @@
 # Famila Agent
 
+## 核心目标
+
+我们要做一个能与用户长期相处的个人助手。HDSI 为她提供一个连续、自洽的世界。她在其中感知用户和环境，形成自己的记忆与情绪，决定何时接话、怎样回应、要做什么。
+
+Famila 要让外界发生的事成为她在这个世界里能经历的事。用户发来一句话，是手机上收到了一条消息。她想知道明天会不会下雨，可以打开天气 App 看预报。她在 PC 上改清单时收到新消息，可以先回一句，再回到仍未保存的草稿。外部服务和工具支撑这些交互，行动的结果会改变她随后能看到什么、能做什么。
+
+## 当前实现
+
 独立运行的 TypeScript Agent Harness，以 Node.js 运行，Fastify 提供服务入口。现在可以选择 HDSI 原生会话引擎，或从 `worldEdit-agent` 提取的 LangGraph 执行引擎。新 `.env.example` 选择 HDSI；没有指定引擎的程序化调用保留 LangGraph 兼容行为。
 
 HDSI 路径运行完整上游会话服务。当前默认 `FAMILA_HDSI_MODE=native`，保留逐轮叙事与状态更新；此前快版会跳过过期叙事附带的情绪更新，未通过行为保真验证，只保留为显式 `fast` 试验模式。角色档案使用最小设定，没有加入之前迁移的人格文案。原 LangGraph 路径保留工具、任务和记忆能力。两套引擎不会同时消费同一消息，数据也各自隔离。见 [行为对照验证](docs/hdsi-behavior-validation.md)与[HDSI 接入说明](docs/hdsi-integration.md)。
 
 当前支持一个宿主实例、一个持久 Agent 身份；HDSI 会话运行在子进程中。CLI 和 HTTP 服务是两种启动方式，不要同时使用同一个数据目录。WorldEdit 原项目保持原样，本轮不设计或接入应用接口契约。
+
+外围情景行动 Harness 已提供：设置 `FAMILA_HDSI_ACTIONS=1`，在 native 模式下启用查询时间、保存/读取/列出个人笔记、天气和公开信息搜索；程序化调用还可注册宿主工具。模型以情景文本动作发起执行，最终完整剧本才回到原生 HDSI，不修改内核。见[情景行动接入](docs/scene-actions.md)与[生活工具测试](docs/living-tools.md)。
 
 ## 启动
 
@@ -33,6 +43,8 @@ npm start
 | `FAMILA_DATA_DIR` | 数据目录，默认当前目录下 `.famila` |
 | `FAMILA_CHAT_ENGINE` | `hdsi` 或 `langgraph`；HDSI 数据独立存于数据目录下 `hdsi/` |
 | `FAMILA_HDSI_MODE` | 默认 `native` 保留原生逐轮提交；`fast` 为未通过行为等价验收的低延迟试验 |
+| `FAMILA_HDSI_ACTIONS` | `1` 启用外围情景行动循环，仅支持 native；未设置时保留原行为 |
+| `FAMILA_WEATHER_PROVIDER` | 默认 `wttr`（通常3天分时预报）；`open-meteo` 使用原7天日预报 |
 | `FAMILA_MODEL_VENDOR` | 原模型适配器类型：`openai`、`anthropic`、`google` |
 | `FAMILA_MODEL_API_KEY` / `FAMILA_MODEL_BASE_URL` / `FAMILA_MODEL` | 主模型配置 |
 | `FAMILA_QUICK_API_KEY` / `FAMILA_QUICK_BASE_URL` / `FAMILA_QUICK_MODEL` / `FAMILA_QUICK_VENDOR` | 情绪评估、记忆归档等轻量调用的模型配置 |
@@ -41,7 +53,7 @@ npm start
 | `FAMILA_API_TOKEN` | Bearer Token；监听非回环地址时必须配置 |
 | `DASHSCOPE_API_KEY` / `DASHSCOPE_WEB_SEARCH_MODEL` | 可选的独立联网搜索配置 |
 
-HDSI 接入当前使用 OpenAI-compatible Chat Completions 流式 JSON 接口，读取主模型配置；不使用 LangGraph 的 quick 配置、Responses API 或原工具注册表。LangGraph 路径未设置的模型字段保留数据库现有值，显式主模型字段默认也配置 quick 模型；模型配置会保存在其本地数据库中。
+HDSI 接入使用 OpenAI-compatible Chat Completions，native 模式接收完整 JSON 剧本；外围行动往返使用情景文本，最终再归一为原生剧本。读取主模型配置，不使用 LangGraph 的 quick 配置、Responses API 或原工具注册表。LangGraph 路径未设置的模型字段保留数据库现有值，显式主模型字段默认也配置 quick 模型；模型配置会保存在其本地数据库中。
 
 ## Agent 服务入口
 
@@ -52,7 +64,10 @@ HDSI 接入当前使用 OpenAI-compatible Chat Completions 流式 JSON 接口，
 | `GET /health` | Runtime 接收状态与队列状态 |
 | `POST /messages` | 接收 `{ "text": "你好", "requestId": "可选唯一标识" }`，返回 SSE |
 | `GET /history` | 读取近期持久化对话 |
+| `GET /deliveries?after=0` | HDSI 会话气泡 SSE，每次实际投递触发一个 `bubble`，包含 cursor、requestId、content 和 created。断线后传最后处理的 cursor，或用 SSE 的 Last-Event-ID 续接。 |
 | `POST /interrupt` | 请求中断当前 Agent 回复 |
+
+HDSI 聊天客户端从 `/deliveries` 渲染气泡，通过 `POST /messages` 提交输入。POST 的 `complete` 表示该请求已结束，后续气泡仍通过会话流送达。每个身份独享一个发件箱。客户端按 cursor 去重。
 
 配置 Token 时，所有请求携带 `Authorization: Bearer <token>`。
 

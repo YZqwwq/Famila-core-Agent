@@ -6,6 +6,11 @@ import { loadRuntimeConfig } from '../runtime/config'
 
 async function main() {
   const runtime = await startAgentRuntime(loadRuntimeConfig().core)
+  const controller = new AbortController()
+  const feed = runtime.deliveries?.(undefined, controller.signal)
+  const display = (async () => {
+    if (feed) for await (const bubble of feed) process.stdout.write(bubble.content + '\n')
+  })()
   const input = createInterface({ input: process.stdin, output: process.stdout, terminal: !!process.stdin.isTTY })
   process.stdout.write(process.env.FAMILA_CHAT_ENGINE === 'hdsi'
     ? 'Famila：输入消息；/exit 等待保存完成后退出。\n'
@@ -23,7 +28,7 @@ async function main() {
       if (text === '/exit') break
       if (text === '/interrupt') { interrupt(); continue }
       let streamed = false
-      void runtime.sendMessage({ text, requestId: randomUUID() }, chunk => {
+      void runtime.sendMessage({ text, requestId: randomUUID() }, feed ? undefined : chunk => {
         if (chunk.type === 'text_delta') { process.stdout.write(chunk.content); streamed = true }
         if (chunk.type === 'done' || chunk.type === 'interrupted') {
           if (!streamed) {
@@ -41,6 +46,8 @@ async function main() {
   } finally {
     input.close()
     await runtime.close()
+    controller.abort()
+    await display
     process.removeListener('SIGINT', interrupt)
     process.removeListener('SIGTERM', terminate)
   }
