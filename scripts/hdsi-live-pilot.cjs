@@ -62,7 +62,7 @@ async function main() {
   try {
     runtime = await startHdsiRuntime({ dataDirectory: path.join(out, 'identity'), model: {
       ...cfg, vendor: 'openai', modelKey: 'local-proxy', quickModelKey: 'local-proxy', baseURL: `http://127.0.0.1:${proxy.address().port}`
-    } }, { mode: 'fast' })
+    } }, { isolatedSqlite: true, mode: 'fast' })
     for (const [index, text] of ['刚下班，感觉今天过了一个世纪。', '我正在纠结夜宵吃啥，想吃点辣的。', '家里只有泡面和一个鸡蛋，懒得出门。'].entries()) {
       const turn = { id: `pilot-${index + 1}`, input: text, reply: '' }
       const start = performance.now()

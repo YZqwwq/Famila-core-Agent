@@ -16,7 +16,15 @@ HDSI 路径运行完整上游会话服务。当前默认 `FAMILA_HDSI_MODE=nativ
 
 外围情景行动 Harness 已提供：设置 `FAMILA_HDSI_ACTIONS=1`，在 native 模式下启用查询时间、保存/读取/列出个人笔记、天气和公开信息搜索；程序化调用还可注册宿主工具。模型以情景文本动作发起执行，最终完整剧本才回到原生 HDSI，不修改内核。见[情景行动接入](docs/scene-actions.md)与[生活工具测试](docs/living-tools.md)。
 
+## HDSI 对话数据库
+
+HTTP、CLI 和 HDSI 程序入口默认使用远程测试库。开发环境使用 `FAMILA_DB_ENV=test`，正式服务显式设置 `FAMILA_DB_ENV=prod`。两个环境分别读取 `FAMILA_TEST_PG_*` 和 `FAMILA_PROD_PG_*`，共享 `FAMILA_PG_CA_FILE`。启动时客户端验证证书和主机身份，在对应库的 `famila` schema 创建表。每个库同一时间支持一个活动会话服务。
+
+消息队列、回复、HDSI 故事与记忆、笔记和编辑器状态均按库保存。首次接入从该库现有状态开始，旧 SQLite 文件保留在原目录。离线回归与需要全新身份的对照实验显式使用 `isolatedSqlite`。运行 `npm run build` 后，`node scripts/postgres-chat-smoke.cjs` 会用本地模型替身在测试库留下带随机标识的验收对话。
+
 ## 启动
+
+使用 HDSI 引擎启动 Fastify 服务后，可打开 [Famila 写作工作台](http://127.0.0.1:4317/workbench)。若修改过服务端口，请使用实际监听地址。工作台沿用上游 HDSI 的六页导航，读取当前实例的数据。在「当前故事」保存人设后，后续叙事使用更新后的设定；首次保存会建立故事。「配置中心」展示当前运行参数。设置了 `FAMILA_API_TOKEN` 时，在浏览器中输入同一个服务令牌。
 
 需要 Node.js >= 20.19.5。SQLite 和中文分词依赖平台原生二进制。
 

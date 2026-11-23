@@ -1,6 +1,8 @@
 import Fastify from 'fastify'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { PassThrough, Readable } from 'node:stream'
+import { readFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
 import type { AgentRuntime } from './runtime/agentRuntime'
 
 export function createFamilaServer(runtime: AgentRuntime, options: { token?: string; logger?: boolean } = {}) {
@@ -12,6 +14,7 @@ export function createFamilaServer(runtime: AgentRuntime, options: { token?: str
     ajv: { customOptions: { removeAdditional: false } }
   })
   app.addHook('onRequest', async (request, reply) => {
+    if (runtime.workbench && request.method === 'GET' && request.routeOptions.url === '/workbench') return
     if (options.token) {
       const expected = Buffer.from(`Bearer ${options.token}`)
       const actual = Buffer.from(request.headers.authorization ?? '')
@@ -23,6 +26,17 @@ export function createFamilaServer(runtime: AgentRuntime, options: { token?: str
   })
 
   app.get('/health', async () => ({ status: 'ok', ...runtime.getStatus() }))
+  if (runtime.workbench) {
+    app.get('/workbench', async (_, reply) => reply.type('text/html; charset=utf-8')
+      .header('Referrer-Policy', 'no-referrer')
+      .send(await readFile(resolve(__dirname, '../resources/workbench.html'), 'utf8')))
+    app.get('/workbench/data', async (_, reply) => reply.header('Cache-Control', 'no-store').send(await runtime.workbench!()))
+    app.patch<{ Body: Record<string, string> }>('/workbench/story', { schema: { body: {
+      type: 'object', minProperties: 1, additionalProperties: false,
+      properties: Object.fromEntries(['name','profile','world','location','supportingCast','perspective','relationship','style']
+        .map(key => [key, { type: 'string', maxLength: key === 'name' ? 100 : 4000, ...(key === 'name' ? { pattern: '\\S' } : {}) }]))
+    } } }, async (req, reply) => reply.header('Cache-Control', 'no-store').send(await runtime.workbench!(req.body)))
+  }
   const feeds = new Set<AbortController>()
   if (runtime.deliveries) {
     app.get<{ Querystring: { after?: string } }>('/deliveries', (request, reply) => {

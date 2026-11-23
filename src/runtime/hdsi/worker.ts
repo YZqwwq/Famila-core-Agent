@@ -1,6 +1,7 @@
 import { resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { Context } from 'koishi'
+import { FamilaPostgresDriver, postgresConfig } from './postgres'
 import { SQLiteDriver } from '@minatojs/driver-sqlite'
 import { HTTP } from '@cordisjs/plugin-http'
 
@@ -53,7 +54,8 @@ async function start(input: any) {
   app = new Context()
   app.baseDir = input.dataDirectory
   app.plugin(HTTP)
-  app.plugin(SQLiteDriver as any, { path: resolve(input.dataDirectory, 'conversation.sqlite') })
+  if (execution.databaseStage) app.plugin(FamilaPostgresDriver as any, postgresConfig(execution.databaseStage))
+  else app.plugin(SQLiteDriver as any, { path: resolve(input.dataDirectory, 'conversation.sqlite') })
   const config = upstream.Config({
     model: { providers: [{ id: 'famila', label: 'Famila model', mode: 'openai-compatible', enabled: true,
       model: model.model, endpoint: model.baseURL.replace(/\/$/, '') + '/chat/completions', apiKey: model.modelKey ?? '',
@@ -163,6 +165,10 @@ async function inbound(input: any) {
 }
 
 process.on('message', (message: any) => {
+  if (message?.type === 'famila-workbench') {
+    void workbench(message.patch).then(value => publish({ type: 'famila-evaluation-result', id: message.id, value }),
+      () => publish({ type: 'famila-evaluation-result', id: message.id, error: '工作台读取或保存失败。' }))
+  }
   if (message?.type === 'famila-evaluation' && evaluationEnabled) {
     evaluationBusy++
     heartbeat()
@@ -203,4 +209,31 @@ process.on('message', (message: any) => {
     void app.stop().finally(() => process.disconnect())
   }
 })
+
+async function workbench(patch?: Record<string, string>) {
+  const session = upstream.desktopSession({ transport: 'sandbox', accountKey: 'sandbox:famila', platform: 'sandbox',
+    selfId: 'famila', senderId: 'user', senderName: '用户', kind: 'private', content: '', occurredAt: new Date().toISOString() },
+    async () => { throw new Error('Workbench session cannot send messages.') })
+  let story = await service.findStory(session)
+  if (patch) {
+    story ??= await service.createStory(session)
+    await service.serial(story.id, async () => {
+      const fresh = await service.getStory(story.id)
+      const { name, profile, ...fields } = patch
+      story = await service.updateSetting(fresh, { ...fields, character: { ...fresh.setting.character,
+        ...(name === undefined ? {} : { name }), ...(profile === undefined ? {} : { profile }) } })
+    })
+  }
+  const setting = story?.setting ?? service.initialStorySetting()
+  const { runtime, model } = service.config
+  const recent = story ? await service.recentEntries(story.id, 50) : []
+  const research = story ? await app.database.get('interlude_web_observation' as any, { storyId: story.id }, { limit: 20 }) as any[] : []
+  return { storyId: story?.id ?? null, setting: { name: setting.character.name, profile: setting.character.profile,
+    world: setting.world, location: setting.location, supportingCast: setting.supportingCast, perspective: setting.perspective,
+    relationship: setting.relationship, style: setting.style },
+    scenes: recent.filter((r: any) => r.kind === 'script').slice(-6).reverse().map((r: any) => ({ content: r.content, created: r.occurredAt })),
+    research: research.map(r => ({ title: r.title ?? r.url ?? '网页观察', content: r.summary ?? '' })),
+    config: { contextEntries: runtime.contextEntryLimit, contextMinutes: runtime.contextTimeWindowMinutes,
+      outputTokens: model.mainMaxTokens, debounce: runtime.userMessageDebounceSeconds, split: runtime.splitReplyMessages, autoAdvance: runtime.autoAdvanceEnabled } }
+}
 process.on('disconnect', () => { if (!stopping) { stopping = true; clearInterval(timer); dispose?.(); void app?.stop().finally(() => process.exit(0)) } })

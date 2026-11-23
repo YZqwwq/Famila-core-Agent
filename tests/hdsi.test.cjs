@@ -6,7 +6,7 @@ const { tmpdir } = require('node:os')
 const { join } = require('node:path')
 const Database = require('better-sqlite3')
 const { startHdsiRuntime: startEngine } = require('../dist/runtime/hdsi/hdsiRuntime')
-const startHdsiRuntime = options => startEngine(options, { mode: 'fast' })
+const startHdsiRuntime = options => startEngine(options, { isolatedSqlite: true, mode: 'fast' })
 const { createFamilaServer } = require('../dist/server')
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const gate = () => { let release; const promise = new Promise(resolve => { release = resolve }); return { promise, release } }
@@ -16,7 +16,7 @@ test('HDSI: default execution is native and evaluation controls are disabled', {
   const directory = mkdtempSync(join(tmpdir(), 'famila-hdsi-native-'))
   let runtime
   try {
-    runtime = await startEngine({ dataDirectory: directory, model: { model: 'fixture', baseURL: 'http://127.0.0.1:9', modelKey: 'fixture' } })
+    runtime = await startEngine({ dataDirectory: directory, model: { model: 'fixture', baseURL: 'http://127.0.0.1:9', modelKey: 'fixture' } }, { isolatedSqlite: true })
     assert.equal(runtime.getStatus().executionMode, 'native')
     await assert.rejects(runtime.evaluate('snapshot'), /disabled/)
   } finally {

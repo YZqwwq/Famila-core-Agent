@@ -8,6 +8,7 @@ export interface DeliveredBubble {
 }
 
 export interface AgentRuntime {
+  workbench?(patch?: Record<string, string>): Promise<unknown>
   getStatus(): { accepting: boolean; pendingRequests: number }
   sendMessage(input: { text: string; requestId?: string }, onChunk?: (chunk: StreamChunk) => void): Promise<void>
   getHistory(): Promise<unknown>

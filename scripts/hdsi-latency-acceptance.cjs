@@ -67,7 +67,7 @@ async function main() {
   })
   await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve))
   try {
-    runtime = await startHdsiRuntime({ dataDirectory: path.join(out, 'identity'), model: { ...cfg, vendor: 'openai', modelKey: 'local-only', baseURL: `http://127.0.0.1:${proxy.address().port}` } }, { mode: 'native' })
+    runtime = await startHdsiRuntime({ dataDirectory: path.join(out, 'identity'), model: { ...cfg, vendor: 'openai', modelKey: 'local-only', baseURL: `http://127.0.0.1:${proxy.address().port}` } }, { isolatedSqlite: true, mode: 'native' })
     app = createFamilaServer(runtime)
     await app.listen({ host: '127.0.0.1', port: 0 })
     for (const [i, text] of ['今天终于把积压的事忙完了，刚坐下来。', '晚饭还没吃，在想煮面还是点外卖。', '还是煮面吧，冰箱里正好有鸡蛋。'].entries()) {

@@ -28,7 +28,7 @@ test('native bubbles arrive live and resume after HTTP disconnect and process re
   const opts = { dataDirectory: directory, model: { model: 'fixture', modelKey: 'fixture', baseURL: 'http://127.0.0.1:' + provider.address().port } }
   let app, url, controller
   const start = async () => {
-    app = createFamilaServer(await startHdsiRuntime(opts))
+    app = createFamilaServer(await startHdsiRuntime(opts, { isolatedSqlite: true }))
     url = await app.listen({ host: '127.0.0.1', port: 0 })
   }
   async function connect(cursor) {

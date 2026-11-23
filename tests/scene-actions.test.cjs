@@ -8,6 +8,57 @@ const Database = require('better-sqlite3')
 const { SceneActionStore, parseSceneAction } = require('../dist/runtime/hdsi/sceneActions')
 const { startHdsiRuntime } = require('../dist/runtime/hdsi/hdsiRuntime')
 const { createFamilaServer } = require('../dist/server')
+const { readInlineInk } = require('../dist/runtime/hdsi/sceneWorld')
+
+test('inline ink appends once to the observed draft and leaves ordinary prose alone', async () => {
+  const store = new SceneActionStore(':memory:')
+  try {
+    for (const s of ['她想写钥匙。', '他说：“写个钥匙。”', '她在便签上画了猫。']) assert.deepEqual(readInlineInk(s), { script: s })
+    const mark = '【文稿落字】钥匙【/文稿落字】'
+    for (const s of [mark + mark, '【文稿落字】未写完', '<say id="r">' + mark + '</say>']) assert.throws(() => readInlineInk(s))
+    const ink = readInlineInk('她敲下' + mark + '，又在纸上画了猫。')
+    assert.deepEqual(ink, { script: '她敲下钥匙，又在纸上画了猫。', addition: '钥匙' })
+    await store.ready
+    const world = store.world
+    await world.act('打开文稿', { 标题: '出门' })
+    await world.act('编辑文稿', { 内容: '带上' })
+    const page = (await world.view()).电脑编辑器
+    await world.appendInk('turn', page, ink.addition)
+    await world.appendInk('turn', page, ink.addition)
+    await assert.rejects(() => world.appendInk('other', page, '伞'))
+    await assert.rejects(() => world.appendInk('turn', page, '伞'))
+    assert.deepEqual((await world.view()).电脑编辑器, { 标题: '出门', 正文: '带上钥匙', 已保存: false })
+  } finally { await store.close() }
+})
+
+test('world objects keep drafts, saved text and the last weather page across a restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'scene-world-'))
+  const file = join(dir, 'actions.sqlite')
+  let weather = { ok: true, place: { name: '杭州' }, days: [{ date: '2026-11-22', minC: 6, maxC: 17 }] }
+  const tool = { name: '查询天气', description: '', fields: ['城市', '日期'], readOnly: true, execute: async () => weather }
+  let store = new SceneActionStore(file, [tool])
+  const signal = new AbortController().signal
+  const act = async (name, fields, slot) => JSON.parse(await store.execute('world', slot, { name, fields }, signal))
+  try {
+    assert.equal((await act('编辑文稿', { 内容: '草稿' }, 0)).ok, false)
+    await act('打开文稿', { 标题: '清单' }, 1)
+    await act('编辑文稿', { 内容: '钥匙' }, 2)
+    await act('保存文稿', {}, 3)
+    await act('编辑文稿', { 内容: '' }, 4)
+    await act('打开文稿', { 标题: '另一页' }, 5)
+    await act('查询天气', { 城市: '杭州', 日期: '明天' }, 6)
+    await store.close(); store = new SceneActionStore(file, [tool])
+    assert.equal((await store.world.view()).电脑编辑器.标题, '另一页')
+    assert.equal((await store.world.view()).手机上次打开的天气页.页面.预报[0].最高温, 17)
+    const reopened = await act('打开文稿', { 标题: '清单' }, 7)
+    assert.deepEqual(reopened.页面, { 标题: '清单', 正文: '', 已保存: false })
+    await act('保存文稿', {}, 3) // Replay the earlier receipt without saving the new draft.
+    assert.equal((await store.world.view()).电脑编辑器.已保存, false)
+    weather = { ok: false }
+    await act('查询天气', { 城市: '北京', 日期: '今天' }, 8)
+    assert.equal((await store.world.view()).手机上次打开的天气页.页面, '未取得预报')
+  } finally { await store.close(); rmSync(dir, { recursive: true, force: true }) }
+})
 
 test('scene actions: bounded prose parsing, atomic notes, replay conflict and uncertain external effects', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'scene-action-'))
@@ -29,13 +80,13 @@ test('scene actions: bounded prose parsing, atomic notes, replay conflict and un
     assert.equal(await store.execute('turn', 0, action, signal), result)
     assert.match(await store.execute('turn', 0, { ...action, fields: { '标题': '别的', '内容': '内容' } }, signal), /变化/)
     assert.match(await store.execute('turn', 1, { name: tool.name, fields: {} }, signal), /未知/)
-    store.close(); store = new SceneActionStore(file, [tool])
+    await store.close(); store = new SceneActionStore(file, [tool])
     assert.match(await store.execute('turn', 1, { name: tool.name, fields: {} }, signal), /未知/)
     assert.equal(count, 1)
     const read = await store.execute('read', 0, { name: '读取笔记', fields: { '标题': '出行' } }, signal)
     assert.equal(JSON.parse(read).content, action.fields['内容'])
     assert.match(await store.execute('bad', 0, { name: '保存笔记', fields: { '标题': '缺正文' } }, signal), /参数/)
-  } finally { store.close(); rmSync(dir, { recursive: true, force: true }) }
+  } finally { await store.close(); rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('scene gateway: native HDSI tool loop, real observations, only final commit, HTTP replay and restart', { timeout: 30000 }, async () => {
@@ -44,7 +95,7 @@ test('scene gateway: native HDSI tool loop, real observations, only final commit
   const provider = createServer(async (req, res) => {
     let raw = ''; for await (const part of req) raw += part
     const body = JSON.parse(raw)
-    const enabled = body.messages.some(m => m.content.includes('Famila 外围行动规则'))
+    const enabled = body.messages.some(m => m.content.startsWith('【场景物品'))
     let text
     if (!enabled) { ordinaryCalls++; text = '{}' }
     else {
@@ -71,7 +122,7 @@ test('scene gateway: native HDSI tool loop, real observations, only final commit
   const opts = { dataDirectory: dir, model: { model: 'fixture', modelKey: 'fixture', baseURL: `http://127.0.0.1:${provider.address().port}` } }
   let runtime, server
   try {
-    runtime = await startHdsiRuntime(opts, { mode: 'native', sceneActions: {}, evaluation: true })
+    runtime = await startHdsiRuntime(opts, { isolatedSqlite: true, mode: 'native', sceneActions: {}, evaluation: true })
     server = createFamilaServer(runtime)
     const send = () => server.inject({ method: 'POST', url: '/messages', payload: { requestId: 'write-read', text: '帮我记下周六带伞，保存后核对一下。' } })
     const response = await send()
@@ -88,7 +139,7 @@ test('scene gateway: native HDSI tool loop, real observations, only final commit
     assert.match(dinner.body, /先烧水煮面/)
     assert.equal(mainCalls, 5, 'Historical note narration must not trigger current-turn note guards')
     await server.close(); server = undefined; runtime = undefined
-    runtime = await startHdsiRuntime(opts, { mode: 'native', sceneActions: {} })
+    runtime = await startHdsiRuntime(opts, { isolatedSqlite: true, mode: 'native', sceneActions: {} })
     const chunks = []
     await runtime.sendMessage({ requestId: 'write-read', text: '帮我记下周六带伞，保存后核对一下。' }, c => chunks.push(c))
     assert.equal(mainCalls, 5)

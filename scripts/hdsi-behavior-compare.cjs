@@ -130,7 +130,7 @@ async function main() {
       mainCount = 0
       const directory = path.join(out, arm)
       const options = { dataDirectory: directory, model: { ...cfg, vendor: 'openai', modelKey: 'local-proxy', quickModelKey: 'local-proxy', baseURL: `http://127.0.0.1:${proxy.address().port}` } }
-      const execution = { mode: arm === 'fast' ? 'fast' : 'native', evaluation: true, normalizedTransport: live && !acceptance, ...(arm === 'native' ? { upstreamBundle: originalBundle } : {}) }
+      const execution = { isolatedSqlite: true, mode: arm === 'fast' ? 'fast' : 'native', evaluation: true, normalizedTransport: live && !acceptance, ...(arm === 'native' ? { upstreamBundle: originalBundle } : {}) }
       runtime = await startHdsiRuntime(options, execution)
       results[arm] = { turns: [] }
       const send = async (id, text) => {

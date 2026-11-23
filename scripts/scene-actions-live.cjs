@@ -35,10 +35,10 @@ async function main() {
   let runtime
   const options = { dataDirectory: path.join(out, 'identity'), model: { ...cfg, modelKey: 'local-only', baseURL: `http://127.0.0.1:${proxy.address().port}` } }
   try {
-    runtime = await startHdsiRuntime(options, { mode: 'native', sceneActions: {}, evaluation: true })
+    runtime = await startHdsiRuntime(options, { isolatedSqlite: true, mode: 'native', sceneActions: {}, evaluation: true })
     const texts = ['帮我实际保存一条个人笔记，标题叫“周末出行”，内容是“周六出门带雨伞”。保存后再读取一次核对。', '刚才那条笔记还在吗？请再读取确认一下内容。']
     for (let i = 0; i < texts.length; i++) {
-      if (i) { await runtime.close(); runtime = await startHdsiRuntime(options, { mode: 'native', sceneActions: {}, evaluation: true }) }
+      if (i) { await runtime.close(); runtime = await startHdsiRuntime(options, { isolatedSqlite: true, mode: 'native', sceneActions: {}, evaluation: true }) }
       const turn = { input: texts[i], reply: '' }, start = Date.now()
       await runtime.sendMessage({ text: texts[i], requestId: 'pilot-' + i }, chunk => { if (chunk.type === 'text_delta') turn.reply += chunk.content })
       turn.ms = Date.now() - start; turns.push(turn); save(); console.log(JSON.stringify(turn))

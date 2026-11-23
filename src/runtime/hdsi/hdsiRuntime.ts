@@ -6,6 +6,8 @@ import { setTimeout as delay } from 'node:timers/promises'
 import type { FamilaCoreOptions } from '../../index'
 import type { AgentRuntime, DeliveredBubble } from '../agentRuntime'
 import type { StreamChunk } from '../../share/cache/render/aiagent/aiContent'
+import { databaseStage } from './postgres'
+import { HdsiDatabase } from './hdsiDatabase'
 import { SceneGateway } from './sceneGateway'
 import type { SceneActionsOptions } from './sceneActions'
 export type { SceneTool, SceneActionsOptions } from './sceneActions'
@@ -14,6 +16,9 @@ export { createLivingTools, livingToolOptions } from './livingTools'
 type Row = { id: string; client_id: string; text: string; status: string }
 type Subscriber = { emit?: (chunk: StreamChunk) => void; resolve: () => void; reject: (error: Error) => void }
 export type HdsiExecutionOptions = {
+  /** Offline regression and isolated historical comparisons only. */
+  isolatedSqlite?: boolean
+  databaseStage?: import('./postgres').DatabaseStage
   mode?: 'native' | 'fast'
   /** Evaluation only: load a pinned, unmodified local upstream bundle. Never accepted over HTTP. */
   upstreamBundle?: string
@@ -29,7 +34,10 @@ const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 
 /** HDSI owns conversation state. This adapter owns durable admission and the local HTTP outbox. */
 export class HdsiRuntime implements AgentRuntime {
-  private readonly db: any
+  private db!: HdsiDatabase
+  private readonly pending = new Set<string>()
+  private operations: Promise<void> = Promise.resolve()
+  private deliveryVersion = 0
   private readonly lease = randomUUID()
   private child?: ChildProcess
   private accepting = true
@@ -46,38 +54,53 @@ export class HdsiRuntime implements AgentRuntime {
   private inspections = new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void }>()
 
   constructor(private readonly options: FamilaCoreOptions, private readonly execution: HdsiExecutionOptions = { mode: 'native' }) {
+    if (execution.isolatedSqlite && execution.databaseStage) throw new Error('Choose one HDSI storage backend.')
+    if (!execution.isolatedSqlite) this.execution = { ...execution, databaseStage: databaseStage(execution.databaseStage) }
     if (execution.mode && !['native', 'fast'].includes(execution.mode)) throw new Error('HDSI mode must be native or fast.')
     if (execution.sceneActions && execution.mode === 'fast') throw new Error('Scene actions require native HDSI execution.')
     if (options.dataSource || options.databasePath) throw new Error('HDSI owns its database; supply dataDirectory only.')
     if (options.model?.vendor && options.model.vendor !== 'openai') throw new Error('HDSI adapter currently requires an OpenAI-compatible model connection.')
-    const directory = resolve(options.dataDirectory, 'hdsi')
+  }
+
+  private async openTransport() {
+    const directory = resolve(this.options.dataDirectory, 'hdsi')
     mkdirSync(directory, { recursive: true })
-    const Database = require('better-sqlite3')
-    this.db = new Database(resolve(directory, 'transport.sqlite'))
-    this.db.pragma('journal_mode = WAL')
-    this.db.exec(`CREATE TABLE IF NOT EXISTS owner (id INTEGER PRIMARY KEY, token TEXT, pid INTEGER);
-      CREATE TABLE IF NOT EXISTS inbox (id TEXT PRIMARY KEY, client_id TEXT UNIQUE, text TEXT NOT NULL, status TEXT NOT NULL, created INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS outbox (key TEXT PRIMARY KEY, inbox_id TEXT, content TEXT NOT NULL, created INTEGER NOT NULL);`)
+    const stage = this.execution.databaseStage
+    this.db = stage ? await HdsiDatabase.postgres(stage, error => {
+      this.fail(error)
+      this.child?.kill()
+    }) : HdsiDatabase.sqlite(resolve(directory, 'transport.sqlite'))
     try {
-      this.db.transaction(() => {
-        const owner = this.db.prepare('SELECT * FROM owner WHERE id=1').get()
-        if (owner) {
-          let alive = true
-          try { process.kill(owner.pid, 0) } catch (e) { alive = (e as NodeJS.ErrnoException).code !== 'ESRCH' }
-          if (alive) throw new Error('This HDSI identity already has a running owner.')
+      if (stage) {
+        const [lock] = await this.db.all('SELECT pg_try_advisory_lock(197801, 1) AS acquired')
+        if (!lock.acquired) throw new Error('This HDSI identity already has a running owner.')
+      }
+      await this.db.transaction(async query => {
+        if (!stage) {
+          await query('CREATE TABLE IF NOT EXISTS owner (id INTEGER PRIMARY KEY, token TEXT, pid INTEGER)')
+          const [owner] = (await query('SELECT * FROM owner WHERE id=1')).rows
+          if (owner) {
+            let alive = true
+            try { process.kill(owner.pid, 0) } catch (e) { alive = (e as NodeJS.ErrnoException).code !== 'ESRCH' }
+            if (alive) throw new Error('This HDSI identity already has a running owner.')
+          }
+          await query('INSERT OR REPLACE INTO owner VALUES (1,?,?)', this.lease, process.pid)
         }
-        this.db.prepare('INSERT OR REPLACE INTO owner VALUES (1,?,?)').run(this.lease, process.pid)
-      }).immediate()
-    } catch (error) { this.db.close(); throw error }
+        const sequence = stage ? ', rowid SERIAL UNIQUE' : ''
+        await query('CREATE TABLE IF NOT EXISTS inbox (id TEXT PRIMARY KEY, client_id TEXT UNIQUE, text TEXT NOT NULL, status TEXT NOT NULL, created DOUBLE PRECISION NOT NULL' + sequence + ')')
+        await query('CREATE TABLE IF NOT EXISTS outbox (key TEXT PRIMARY KEY, inbox_id TEXT, content TEXT NOT NULL, created DOUBLE PRECISION NOT NULL' + sequence + ')')
+      })
+    } catch (error) { await this.db.close(); throw error }
   }
 
   async start(): Promise<this> {
+    await this.openTransport()
     let workerModel = this.options.model
     if (this.execution.sceneActions) {
       try {
-        this.gateway = new SceneGateway(this.options.model ?? {}, resolve(this.options.dataDirectory, 'hdsi/actions.sqlite'), this.execution.sceneActions)
+        this.gateway = new SceneGateway(this.options.model ?? {}, this.execution.databaseStage ? this.db : resolve(this.options.dataDirectory, 'hdsi/actions.sqlite'), this.execution.sceneActions)
         workerModel = { ...this.options.model, ...await this.gateway.start() } as typeof workerModel
-      } catch (error) { await this.gateway?.close(); this.release(); throw error }
+      } catch (error) { await this.gateway?.close(); await this.release(); throw error }
     }
     const diagnostics = this.execution.evaluation && !!this.execution.onDiagnostic
     const worker = fork(resolve(__dirname, 'worker.js'), [], { stdio: ['ignore', diagnostics ? 'pipe' : 'ignore', 'pipe', 'ipc'],
@@ -93,30 +116,30 @@ export class HdsiRuntime implements AgentRuntime {
     }
     worker.stderr?.on('data', diagnostic)
     worker.stdout?.on('data', diagnostic)
-    worker.on('message', message => { void this.onMessage(message as any).catch(error => this.fail(error)) })
+    worker.on('message', message => { this.operations = this.operations.then(() => this.onMessage(message as any)).catch(error => this.fail(error)) })
     worker.on('error', error => this.fail(error))
     worker.on('exit', () => { if (!this.stopping) this.fail(new Error('HDSI worker exited; persisted requests can recover on restart.')) })
-    const delivered = this.db.prepare(`SELECT i.id, i.text, o.content, o.created FROM outbox o
-      JOIN inbox i ON i.id=o.inbox_id ORDER BY o.created,o.rowid`).all()
-    const { sceneActions, onDiagnostic, ...workerExecution } = this.execution
-    worker.send({ type: 'famila-start', dataDirectory: resolve(this.options.dataDirectory, 'hdsi'), model: workerModel, delivered,
-      execution: { ...workerExecution, sceneActionsEnabled: !!sceneActions } })
-    const started = Date.now()
     try {
+      const delivered = await this.db.all(`SELECT i.id, i.text, o.content, o.created FROM outbox o
+        JOIN inbox i ON i.id=o.inbox_id ORDER BY o.created,o.rowid`)
+      const { sceneActions, onDiagnostic, ...workerExecution } = this.execution
+      worker.send({ type: 'famila-start', dataDirectory: resolve(this.options.dataDirectory, 'hdsi'), model: workerModel, delivered,
+        execution: { ...workerExecution, sceneActionsEnabled: !!sceneActions } })
+      const started = Date.now()
       while (!this.state.ready) {
         if (this.childError) throw this.childError
         if (Date.now() - started > 20000) throw new Error('HDSI worker start timeout.')
         await delay(20)
       }
-      this.db.prepare("UPDATE inbox SET status='completed' WHERE status='delivered'").run()
-      for (const row of this.db.prepare("SELECT * FROM inbox WHERE status IN ('queued','processing') ORDER BY created,rowid").all() as Row[]) this.submit(row, true)
+      await this.db.run("UPDATE inbox SET status='completed' WHERE status='delivered'")
+      for (const row of await this.db.all("SELECT * FROM inbox WHERE status IN ('queued','processing') ORDER BY created,rowid")) { this.pending.add(row.id); await this.submit(row, true) }
       return this
-    } catch (error) { this.stopping = true; worker.kill(); await this.gateway?.close(); this.release(); throw error }
+    } catch (error) { this.stopping = true; worker.kill(); await this.gateway?.close(); await this.release(); throw error }
   }
 
   getStatus() {
     return { engine: 'hdsi', executionMode: this.execution.mode ?? 'native', sceneActionsEnabled: !!this.execution.sceneActions, accepting: this.accepting && !this.childError,
-      pendingRequests: this.db.prepare("SELECT count(*) AS n FROM inbox WHERE status IN ('queued','processing','delivered')").get().n as number,
+      pendingRequests: this.pending.size,
       ...this.state }
   }
 
@@ -126,28 +149,36 @@ export class HdsiRuntime implements AgentRuntime {
     const clientId = input.requestId?.trim() || randomUUID()
     if (clientId.length > 128) return Promise.reject(new Error('Invalid requestId.'))
     const id = `famila-${hash(clientId).slice(0, 40)}`
-    let row = this.db.prepare('SELECT * FROM inbox WHERE id=?').get(id) as Row | undefined
-    if (row && row.text !== input.text) return Promise.reject(new Error('requestId already belongs to different content.'))
-    if (!row) {
-      if (this.getStatus().pendingRequests >= 64) return Promise.reject(new Error('HDSI input queue is full.'))
-      this.db.prepare("INSERT INTO inbox VALUES (?,?,?,'queued',?)").run(id, clientId, input.text, Date.now())
-      row = this.db.prepare('SELECT * FROM inbox WHERE id=?').get(id)
-    }
-    const promise = new Promise<void>((resolvePromise, reject) => {
-      const set = this.subscribers.get(id) ?? new Set<Subscriber>()
-      set.add({ emit, resolve: resolvePromise, reject }); this.subscribers.set(id, set)
+    return new Promise<void>((resolve, reject) => {
+      const admit = async () => {
+        if (this.childError) throw this.childError
+        let [row] = await this.db.all('SELECT * FROM inbox WHERE id=?', id)
+        if (row && row.text !== input.text) throw new Error('requestId already belongs to different content.')
+        if (!row) {
+          if (this.getStatus().pendingRequests >= 64) return Promise.reject(new Error('HDSI input queue is full.'))
+          await this.db.run("INSERT INTO inbox (id,client_id,text,status,created) VALUES (?,?,?,'queued',?)", id, clientId, input.text, Date.now())
+          this.pending.add(id)
+          row = { id, client_id: clientId, text: input.text, status: 'queued' }
+        }
+
+        const set = this.subscribers.get(id) ?? new Set<Subscriber>()
+        set.add({ emit, resolve, reject })
+        this.subscribers.set(id, set)
+        if (row.status === 'completed') await this.finish(id)
+        else if (row.status === 'failed') this.failRequest(id, new Error('Previous HDSI request failed. Use a new requestId to retry.'))
+        else {
+          try { await this.submit(row, false) } catch (error) { this.failRequest(id, error as Error) }
+        }
+      }
+      this.operations = this.operations.then(admit).catch(reject)
     })
-    if (row!.status === 'completed') this.finish(id)
-    else if (row!.status === 'failed') this.failRequest(id, new Error('Previous HDSI request failed. Use a new requestId to retry.'))
-    else this.submit(row!, false)
-    return promise
   }
 
-  private submit(row: Row, recovering: boolean) {
+  private async submit(row: Row, recovering: boolean) {
     if (this.sent.has(row.id)) return
+    await this.db.run("UPDATE inbox SET status='processing' WHERE id=?", row.id)
     this.sent.add(row.id)
     this.state.pendingTurns++
-    this.db.prepare("UPDATE inbox SET status='processing' WHERE id=?").run(row.id)
     this.child?.send({ type: 'famila-inbound', recovering, id: row.id, text: row.text })
   }
 
@@ -162,21 +193,21 @@ export class HdsiRuntime implements AgentRuntime {
     if (frame.type === 'famila-drained') { this.drainResolved?.(); return }
     if (frame.type === 'famila-status') { this.state = frame.state; return }
     if (frame.type === 'famila-visible-committed') {
-      this.db.prepare("UPDATE inbox SET status='completed' WHERE id=? AND status='delivered'").run(frame.id)
-      this.finish(frame.id)
+      await this.db.run("UPDATE inbox SET status='completed' WHERE id=? AND status='delivered'", frame.id)
+      await this.finish(frame.id)
       return
     }
     if (frame.type === 'famila-fatal') { this.fail(new Error('HDSI worker initialization failed.')); return }
     if (frame.type === 'famila-settled') {
       for (const id of frame.ids as string[]) {
-        this.db.prepare("UPDATE inbox SET status='completed' WHERE id=? AND status IN ('processing','delivered')").run(id)
-        this.finish(id)
+        await this.db.run("UPDATE inbox SET status='completed' WHERE id=? AND status IN ('processing','delivered')", id)
+        await this.finish(id)
       }
       return
     }
     if (frame.type !== 'hdsi-desktop') return
     if (frame.event === 'inbound-result' && !frame.payload.accepted) {
-      this.db.prepare("UPDATE inbox SET status='failed' WHERE id=?").run(frame.payload.requestId)
+      await this.db.run("UPDATE inbox SET status='failed' WHERE id=?", frame.payload.requestId)
       this.failRequest(frame.payload.requestId, new Error('HDSI did not accept the request.'))
     }
     if (frame.event !== 'delivery') return
@@ -185,11 +216,11 @@ export class HdsiRuntime implements AgentRuntime {
     const key = delivery.intentKey || `${id}:${hash(delivery.content)}`
     // Separator is transport markup, rendered as a line break without rewriting words.
     const content = String(delivery.content).replace(/<sep\s*\/?>/g, '\n')
-    const inserted = this.db.transaction(() => {
-      const result = this.db.prepare('INSERT OR IGNORE INTO outbox VALUES (?,?,?,?)').run(key, id ?? null, content, Date.now())
-      if (id) this.db.prepare("UPDATE inbox SET status=CASE WHEN status='completed' THEN status ELSE 'delivered' END WHERE id=?").run(id)
+    const inserted = await this.db.transaction(async query => {
+      const result = await query('INSERT INTO outbox (key,inbox_id,content,created) VALUES (?,?,?,?) ON CONFLICT(key) DO NOTHING', key, id ?? null, content, Date.now())
+      if (id) await query("UPDATE inbox SET status=CASE WHEN status='completed' THEN status ELSE 'delivered' END WHERE id=?", id)
       return result.changes
-    })()
+    })
     if (inserted) this.wakeDeliveryReaders()
     this.child?.send({ type: 'hdsi-desktop', command: 'delivery-result', value: {
       deliveryId: delivery.deliveryId, status: 'sent', messageIds: [`famila-outbox-${hash(key)}`]
@@ -198,23 +229,25 @@ export class HdsiRuntime implements AgentRuntime {
   }
 
   private wakeDeliveryReaders() {
+    this.deliveryVersion++
     for (const wake of this.deliveryWaiters) wake()
   }
 
   async *deliveries(after: number | undefined, signal: AbortSignal): AsyncIterable<DeliveredBubble> {
     if (signal.aborted || this.stopping || this.childError) return
-    let cursor: number = after ?? this.db.prepare('SELECT coalesce(max(rowid),0) AS id FROM outbox').get().id
+    let cursor: number = after ?? (await this.db.all('SELECT coalesce(max(rowid),0) AS id FROM outbox'))[0].id
     if (!Number.isSafeInteger(cursor) || cursor < 0) throw new Error('Invalid delivery cursor.')
-    const read = this.db.prepare(`SELECT o.rowid AS cursor, i.client_id AS requestId, o.content, o.created
-      FROM outbox o LEFT JOIN inbox i ON i.id=o.inbox_id WHERE o.rowid>? ORDER BY o.rowid LIMIT 64`)
+    const read = `SELECT o.rowid AS cursor, i.client_id AS "requestId", o.content, o.created
+      FROM outbox o LEFT JOIN inbox i ON i.id=o.inbox_id WHERE o.rowid>? ORDER BY o.rowid LIMIT 64`
     while (!signal.aborted && !this.stopping && !this.childError) {
-      const rows = read.all(cursor) as DeliveredBubble[]
+      const version = this.deliveryVersion
+      const rows = await this.db.all(read, cursor) as DeliveredBubble[]
       for (const row of rows) {
         if (signal.aborted || this.stopping || this.childError) return
         cursor = row.cursor
         yield row
       }
-      if (rows.length) continue
+      if (rows.length || this.deliveryVersion !== version || signal.aborted || this.stopping || this.childError) continue
       // Register before yielding control after the empty read.
       await new Promise<void>(resolve => {
         const wake = () => {
@@ -228,8 +261,10 @@ export class HdsiRuntime implements AgentRuntime {
     }
   }
 
-  private finish(id: string) {
-    const content = this.db.prepare('SELECT content FROM outbox WHERE inbox_id=? ORDER BY created,rowid').all(id).map((r: any) => r.content).join('\n')
+  private async finish(id: string) {
+    this.sent.delete(id)
+    const content = (await this.db.all('SELECT content FROM outbox WHERE inbox_id=? ORDER BY created,rowid', id)).map((r: any) => r.content).join('\n')
+    this.pending.delete(id)
     const listeners = this.subscribers.get(id)
     this.subscribers.delete(id)
     for (const subscriber of listeners ?? []) {
@@ -238,25 +273,36 @@ export class HdsiRuntime implements AgentRuntime {
     }
   }
   private failRequest(id: string, error: Error) {
+    this.sent.delete(id)
+    this.pending.delete(id)
     for (const subscriber of this.subscribers.get(id) ?? []) subscriber.reject(error)
     this.subscribers.delete(id)
   }
   private fail(error: Error) { this.childError = error; this.wakeDeliveryReaders(); this.accepting = false; this.drainResolved?.(); for (const id of this.subscribers.keys()) this.failRequest(id, error); for (const pending of this.inspections.values()) pending.reject(error); this.inspections.clear() }
   async evaluate(command: 'snapshot' | 'compact' | 'restrict-context'): Promise<any> {
     if (!this.execution.evaluation) throw new Error('Evaluation access is disabled.')
+    return this.workerQuery({ type: 'famila-evaluation', command })
+  }
+  async workbench(patch?: Record<string, string>) {
+    const snapshot = await this.workerQuery({ type: 'famila-workbench', patch })
+    return { ...snapshot, status: this.getStatus(), model: this.options.model?.model,
+      replies: await this.db.all('SELECT content,created FROM outbox ORDER BY rowid DESC LIMIT 40') }
+  }
+  private async workerQuery(frame: Record<string, unknown>): Promise<any> {
     if (this.childError || !this.child?.connected) throw this.childError ?? new Error('Worker unavailable.')
     const id = randomUUID()
     const result = new Promise((resolvePromise, reject) => this.inspections.set(id, { resolve: resolvePromise, reject }))
-    this.child.send({ type: 'famila-evaluation', id, command })
+    this.child.send({ ...frame, id })
     return result
   }
   async getHistory() {
-    return { engine: 'hdsi', messages: this.db.prepare(`SELECT client_id AS requestId, text, status, created FROM inbox ORDER BY created,rowid`).all(),
-      replies: this.db.prepare('SELECT inbox_id AS eventId, content, created FROM outbox ORDER BY created,rowid').all() }
+    return { engine: 'hdsi', messages: await this.db.all(`SELECT client_id AS "requestId", text, status, created FROM inbox ORDER BY created,rowid`),
+      replies: await this.db.all('SELECT inbox_id AS "eventId", content, created FROM outbox ORDER BY created,rowid') }
   }
   interrupt() { return { message: 'HDSI uses message-driven conversation scheduling.' } }
   async drain() {
     this.accepting = false
+    await this.operations
     if (this.childError || !this.child?.connected) return
     this.draining ??= new Promise<void>(resolvePromise => {
       this.drainResolved = resolvePromise
@@ -275,10 +321,13 @@ export class HdsiRuntime implements AgentRuntime {
         await exited
       }
       await this.gateway?.close()
-      this.release()
+      await this.operations
+      await this.release()
     })()
   }
-  private release() { this.db.prepare('DELETE FROM owner WHERE token=?').run(this.lease); this.db.close() }
+  private async release() {
+    try { if (!this.execution.databaseStage) await this.db.run('DELETE FROM owner WHERE token=?', this.lease) } finally { await this.db.close() }
+  }
 }
 
 export async function startHdsiRuntime(options: FamilaCoreOptions, execution?: HdsiExecutionOptions): Promise<HdsiRuntime> {

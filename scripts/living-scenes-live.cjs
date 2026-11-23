@@ -9,8 +9,10 @@ async function main() {
   fs.mkdirSync(out, { recursive: true })
   const calls = [], tools = [], turns = []
   const filter = process.argv.find(arg => arg.startsWith('--scenes='))?.slice(9).split(',')
+  const boundaryTrial = process.argv.includes('--world-boundary')
+  const explainOwnership = boundaryTrial && process.argv.includes('--explain-ownership')
   let active = '', searches = 0
-  const save = () => fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify({ model: cfg.model,
+  const save = () => fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify({ model: cfg.model, ...(boundaryTrial ? { explainOwnership } : {}),
     limits: { mainCalls: 18, mainOutputTokens: 2048, searchCalls: 2, searchOutputTokens: 800 }, calls, tools, turns }, null, 2))
   const proxy = createServer(async (req, res) => {
     if (calls.length >= 18) { res.writeHead(429).end('{}'); return }
@@ -18,6 +20,10 @@ async function main() {
     try {
       let raw = ''; for await (const part of req) { raw += part; if (raw.length > 300000) throw Error('input_limit') }
       const body = JSON.parse(raw); body.max_tokens = 2048
+      if (explainOwnership) {
+        const rules = body.messages.find(m => m.role === 'system' && m.content.includes('【工具结束】') && m.content.includes('打开文稿'))
+        if (rules) rules.content += '\n世界里可以发生目录以外的事。身体、普通物品上的动作和结果，自然写进剧本就能留到下一幕。对已有页面，只在它所保管的事实发生变化时使用行动块：例如当前电脑编辑器里已有的页，落字就用「编辑文稿」，页面回来的正文才是屏幕上的字。一个场景可以同时发生这两类动作。涉及用户现实设备的结果，需要相应的外部回执。'
+      }
       fs.writeFileSync(path.join(out, `request-${record.id}.json`), JSON.stringify(body, null, 2))
       const start = Date.now()
       const response = await fetch(cfg.baseURL.replace(/\/$/, '') + '/chat/completions', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30000),
@@ -69,14 +75,35 @@ async function main() {
       turn.scene = scene?.content ?? null
       turn.plannedReply = scene?.metadata?.interaction?.reply?.content ?? null
       turn.deliveryState = scene?.metadata?.deliveryActions ?? []
-      if (!segments.length || segments.length !== turn.bubbles.length || segments.some((s, i) => s.status !== 'delivered' || s.content !== turn.bubbles[i].content)) {
+      const silentScene = boundaryTrial && id !== 'recall' && scene?.metadata?.interaction?.reply?.mode === 'none'
+      if ((!segments.length && !silentScene) || segments.length !== turn.bubbles.length || segments.some((s, i) => s.status !== 'delivered' || s.content !== turn.bubbles[i].content)) {
         throw new Error('Delivered bubbles differ from native delivery ledger')
       }
       turn.modelArtifacts = calls.filter(c => c.scene === id).map(c => `output-${c.id}.txt`)
       const db = new Database(path.join(directory, 'hdsi/actions.sqlite'), { readonly: true })
-      try { turn.notes = db.prepare('SELECT title,content FROM notes').all(); turn.receipts = db.prepare('SELECT id,status,result FROM actions').all() } finally { db.close() }
+      try {
+        turn.notes = db.prepare('SELECT title,content FROM notes').all()
+        turn.receipts = db.prepare('SELECT id,status,result FROM actions').all()
+        turn.editor = db.prepare('SELECT d.* FROM documents d JOIN editor e ON e.title=d.title WHERE e.id=1').get()
+        if (boundaryTrial) turn.inlineEdits = db.prepare('SELECT title,addition FROM inline_edits ORDER BY rowid').all()
+      } finally { db.close() }
       const used = tools.filter(t => t.scene === id)
       if (id === 'chat') turn.functionalPass = used.length === 0 && turn.receipts.length === 0 && !!turn.reply
+      if (id === 'draft' || id === 'aside') turn.functionalPass = turn.editor?.title === '出门清单' && turn.editor.draft === '折叠伞、钥匙' && turn.editor.saved === null
+      if (id === 'revise') turn.functionalPass = turn.editor?.title === '出门清单' && turn.editor.draft === '钥匙' && turn.editor.saved === '钥匙'
+      if (boundaryTrial) {
+        turn.checks = {
+          unsavedKey: turn.editor?.title === '出门清单' && turn.editor.draft === '钥匙' && turn.editor.saved === null,
+          oneInlineEdit: turn.inlineEdits.length === 1 && turn.inlineEdits[0].addition === '钥匙',
+          cleanScene: !/【\/?文稿落字/.test(turn.scene + turn.reply),
+          paperStayedOffComputer: turn.notes.length === 0 && used.length === 0
+            && !turn.receipts.some(r => /便签|画猫|画了一只猫/.test(r.result ?? '')),
+        }
+        if (id === 'both') turn.checks.sceneMentionsPaperAndCat = /纸|便签/.test(turn.scene) && /猫/.test(turn.scene)
+        // Surface check only. Compare the drawing's actual details with the first script in review.
+        if (id === 'recall') turn.checks.replyMentionsBothSurfaces = /钥匙/.test(turn.reply) && /猫|纸上|便签/.test(turn.reply)
+        turn.functionalPass = Object.values(turn.checks).every(Boolean)
+      }
       if (id === 'weather') turn.functionalPass = used.some(t => t.name === '查询天气' && t.result?.ok === true) && !!turn.reply
       if (id === 'note') turn.functionalPass = !!turn.reply && turn.notes.some(n => n.title === '明日出门' && n.content.trim()) && turn.receipts.some(r => /"saved":true/.test(r.result)) && turn.receipts.some(r => /"content":/.test(r.result))
       if (id === 'dinner') turn.functionalPass = used.some(t => t.name === '搜索公开信息' && t.result?.ok === true && t.result.sources.length) && !!turn.reply
@@ -87,12 +114,33 @@ async function main() {
   }
   const start = async (name, list) => {
     const directory = path.join(out, name)
-    runtime = await startHdsiRuntime({ dataDirectory: directory, model: { ...cfg, modelKey: 'local', baseURL: `http://127.0.0.1:${proxy.address().port}` } }, { mode: 'native', evaluation: true,
+    runtime = await startHdsiRuntime({ dataDirectory: directory, model: { ...cfg, modelKey: 'local', baseURL: `http://127.0.0.1:${proxy.address().port}` } }, { isolatedSqlite: true, mode: 'native', evaluation: true,
       onDiagnostic: text => fs.appendFileSync(path.join(out, 'worker-diagnostics.log'), text), sceneActions: { tools: instrument(list) } })
     return directory
   }
   try {
+    if (boundaryTrial) {
+      const dir = path.join(out, 'boundary')
+      fs.mkdirSync(path.join(dir, 'hdsi'), { recursive: true })
+      const { SceneActionStore } = require('../dist/runtime/hdsi/sceneActions')
+      const fixture = new SceneActionStore(path.join(dir, 'hdsi/actions.sqlite'))
+      try { await fixture.execute('fixture', 0, { name: '打开文稿', fields: { 标题: '出门清单' } }, new AbortController().signal) }
+      finally { await fixture.close() }
+      await start('boundary', [])
+      await run('both', '电脑上那张出门清单，帮我添上「钥匙」，先别存。旁边那张纸便签也借你发挥一下，画只小猫吧，长什么样你定。', dir)
+      await run('aside', '刚才窗外突然安静下来了，我都有点不习惯。', dir)
+      await run('recall', '对了，刚才屏幕上和纸上各留下了什么？你给我讲讲纸上那个长什么样。', dir)
+      fs.writeFileSync(path.join(out, 'boundary-native.json'), JSON.stringify(await runtime.evaluate('snapshot'), null, 2))
+      console.log(JSON.stringify({ report: out, model: cfg.model, calls: calls.length }))
+      if (turns.length !== 3 || turns.some(t => !t.functionalPass)) process.exitCode = 1
+      return
+    }
     const directory = await start('daily', createLivingTools(livingToolOptions(cfg)))
+    if (filter) {
+      await run('draft', '你在电脑上开个叫「出门清单」的文稿吧，先写「折叠伞、钥匙」，先放那儿，别存。', directory)
+      await run('aside', '等会儿，我突然听到楼下有只猫在叫。', directory)
+      await run('revise', '啊想起来了，伞已经在车里了。刚才那页只留「钥匙」就行，现在存吧。', directory)
+    }
     await run('chat', '今天忙了一天，终于能坐下来歇会儿了，先陪我闲聊两句。', directory)
     await run('weather', '我明天要在浙江杭州出门，帮我查一下明天的天气，看看该穿什么、要不要带伞。', directory)
     await run('note', '把刚才出门要带的东西保存成一条笔记，标题叫“明日出门”，存好后读出来核对一下。', directory)

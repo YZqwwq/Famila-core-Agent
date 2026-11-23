@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Famila · 写作工作台</title>
+<style>
+:root{font:15px/1.65 "Segoe UI","Microsoft YaHei",sans-serif;color:#272842;background:#f6f6fa;--accent:#624bc2;--line:#dedfe9}
+*{box-sizing:border-box}body{margin:0}header{background:#fff;border-bottom:1px solid var(--line)}.wrap{max-width:1280px;margin:auto;padding:0 32px}
+.brand{display:flex;align-items:center;gap:12px;height:68px;font-size:23px;font-weight:700}.brand i{width:18px;height:18px;background:var(--accent);transform:rotate(45deg);border:4px double white}.brand small{font-size:14px;font-weight:400;color:#656579}
+nav{display:flex;gap:8px;overflow:auto}nav a{color:#626273;text-decoration:none;white-space:nowrap;padding:12px 15px;border-bottom:3px solid transparent}nav a[aria-current=page]{color:var(--accent);border-color:var(--accent);font-weight:600}
+.head,.cardhead{display:flex;align-items:center;justify-content:space-between;gap:16px}h1{font-size:26px;margin:28px 0 20px}h2{font-size:16px;margin:0 0 14px}p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start;padding-bottom:32px}
+section,form{background:white;border:1px solid var(--line);border-radius:10px;padding:22px}.wide{grid-column:1/-1}.row{display:flex;justify-content:space-between;gap:20px;padding:9px 0;border-bottom:1px solid #eeeef4}.row:last-child{border:0}.muted,time{color:#696979;font-size:13px}article+article{border-top:1px solid var(--line);margin-top:15px;padding-top:15px}time{display:block;margin-bottom:5px}
+button,input,textarea{font:inherit}button{color:var(--accent);border:1px solid #c9c3e1;background:#fff;border-radius:6px;padding:6px 14px;cursor:pointer}button:disabled{opacity:.5;cursor:wait}.save{background:var(--accent);color:white;border-color:var(--accent)}label{display:block;font-weight:600;font-size:14px;margin-bottom:16px}input,textarea{display:block;width:100%;margin-top:6px;border:1px solid #c9cad7;padding:9px 12px;border-radius:6px;color:inherit}textarea{resize:vertical;min-height:88px}#notice:not(:empty){margin-top:16px;background:#eeeafb;border-left:3px solid var(--accent);padding:10px 14px}#login{max-width:420px;margin:20px 0}a:focus-visible,button:focus-visible{outline:2px solid var(--accent)}@media(max-width:700px){.wrap{padding:0 16px}.grid{grid-template-columns:1fr}nav a{padding:10px}.brand{height:56px}}
+.dashboard{display:grid;grid-template-columns:minmax(0,2fr) minmax(235px,.8fr);align-items:start;gap:0 38px}
+.dashboard section{min-width:0;overflow-wrap:anywhere}.overview-head{margin:26px 0 12px}.overview-head h1{font-size:14px;font-weight:600;color:#676676;margin:0}.overview-head button{font-size:13px}
+.dashboard .identity{grid-column:1;grid-row:1;background:linear-gradient(110deg,#fff 30%,#f1eef9);border:0;border-left:4px solid #7761bf;border-radius:0 12px 12px 0;padding:28px 32px}
+.identity h2{font-size:clamp(34px,4vw,54px);letter-spacing:-.035em;line-height:1.16;margin:0 0 10px}.identity p{max-width:65ch;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.identity footer{display:flex;align-items:baseline;gap:10px 20px;flex-wrap:wrap;border-top:1px solid var(--line);margin-top:22px;padding-top:14px;font-size:14px}
+.identity footer small{color:#666475;margin-right:7px}.identity a,.scene-detail summary{color:var(--accent);font-size:13px}.identity a{margin-left:auto}
+.dashboard .scene{grid-column:1;grid-row:2;background:transparent;border:0;border-radius:0;padding:24px 0}.scene h2,.runtime h2{font-size:16px;margin:0 0 12px}.scene time{margin-bottom:8px}.scene-detail{margin:8px 0}.scene-detail summary{cursor:pointer}
+.dashboard .runtime{grid-column:2;grid-row:1 / span 2;padding:0 0 0 26px;border:0;border-left:1px solid var(--line);border-radius:0;background:transparent}.runtime .signal{display:flex;align-items:center;gap:8px;font-weight:600}
+.signal:before{content:"";width:8px;height:8px;border-radius:50%;background:#318267}.signal.wait:before{background:#a26812}
+.runtime dl{margin:14px 0}.runtime dl>div{display:flex;justify-content:space-between;align-items:baseline;gap:10px;border-top:1px solid var(--line);padding:6px 0}.runtime dt{font-size:13px;color:#666475}.runtime dd{margin:0;font-variant-numeric:tabular-nums}.runtime .muted{overflow-wrap:anywhere}
+@media(max-width:760px){.dashboard{grid-template-columns:minmax(0,1fr)}.dashboard .identity{padding:22px}.dashboard .runtime{grid-column:1;grid-row:3;border-left:0;border-top:1px solid var(--line);padding:18px 0}.identity a{margin-left:0}}
+@media(min-width:940px){header .wrap{display:flex;align-items:center;justify-content:space-between;gap:16px}header .brand{height:62px}header nav a{padding:18px 12px 16px}}
+</style></head><body>
+<header><div class="wrap"><div class="brand"><i aria-hidden="true"></i>Famila <small>HDSI 写作工作台</small></div><nav aria-label="工作台页面"></nav></div></header>
+<main class="wrap"><p role="status" id="notice"></p><form id="login" hidden><label>服务访问令牌<input type="password" autocomplete="off" required></label><button class="save">连接工作台</button></form>
+<div class="head"><h1></h1><button id="refresh">刷新</button></div><div class="grid" id="panels"></div></main>
+<script type="module">
+const pages={overview:'概览',settings:'配置中心',story:'当前故事',desk:'考据案头',actions:'通信动作',budget:'上下文预算'}
+const fields={name:'主角姓名',profile:'人设描述',world:'世界观',location:'主要地点',supportingCast:'配角',perspective:'主角视角',relationship:'初始关系',style:'叙事文风'}
+const $=s=>document.querySelector(s)
+const el=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e}
+let snapshot,token='',page='overview',dirty=false,busy=false
+const notice=text=>$('#notice').textContent=text
+for(const [key,label] of Object.entries(pages)){
+  const link=el('a',label);link.href='#'+key
+  link.onclick=e=>{if(busy||!allowLeave())e.preventDefault();else dirty=false}
+  $('nav').append(link)
+}
+function allowLeave(){return !dirty||confirm('放弃尚未保存的修改？')}
+window.onbeforeunload=e=>{if(dirty){e.preventDefault();e.returnValue=''}}
+function card(title,wide=false){const box=el('section');if(wide)box.className='wide';box.append(el('h2',title));$('#panels').append(box);return box}
+function rows(title,values){const box=card(title);for(const [k,v] of values){const r=el('div');r.className='row';r.append(el('span',k),el('strong',v??'—'));box.append(r)}}
+function entries(title,items,empty){
+  const box=card(title,true);if(!items.length)box.append(el('p',empty))
+  for(const item of items){const a=el('article');if(item.created)a.append(el('time',new Date(item.created).toLocaleString('zh-CN')));if(item.title)a.append(el('strong',item.title));a.append(el('p',item.content));box.append(a)}
+}
+function dashboard({status,setting,scenes,model}){
+  const persona=card(setting.name||'未命名角色')
+  persona.className='identity'
+  persona.append(el('p',setting.profile||'尚未填写人设描述'))
+  const meta=el('footer')
+  for(const [label,value] of [['主要地点',setting.location],['初始关系',setting.relationship]]){
+    if(!value)continue
+    const item=el('span')
+    item.append(el('small',label),document.createTextNode(value))
+    meta.append(item)
+  }
+  const edit=el('a','编辑人设')
+  edit.href='#story'
+  meta.append(edit)
+  persona.append(meta)
+
+  const scene=card('最近一幕')
+  scene.className='scene'
+  const latest=scenes[0]
+  if(latest){
+    scene.append(el('time',new Date(latest.created).toLocaleString('zh-CN')))
+    const chars=Array.from(latest.content)
+    const preview=el('p',chars.slice(0,140).join('')+(chars.length>140?'…':''))
+    scene.append(preview)
+    if(chars.length>140){
+      const detail=el('details')
+      detail.className='scene-detail'
+      detail.append(el('summary','完整剧本'),el('p',latest.content))
+      detail.ontoggle=()=>{preview.hidden=detail.open}
+      scene.append(detail)
+    }
+  }else{
+    const empty=el('p','尚无剧本记录')
+    empty.className='muted'
+    scene.append(empty)
+  }
+
+  const runtime=card('服务运行')
+  runtime.className='runtime'
+  const available=status.ready && status.accepting
+  const active=status.pendingTurns>0 || status.pendingRequests>0
+  const signal=el('div',!available?'暂未就绪':active?'正在处理消息':status.backgroundTails?'正在整理叙事':'在线 · 等待消息')
+  signal.className=available?'signal':'signal wait'
+  runtime.append(signal)
+  const metrics=el('dl')
+  for(const [label,value] of [['待处理请求',status.pendingRequests],['待处理回合',status.pendingTurns],['后台叙事',status.backgroundTails]]){
+    const item=el('div')
+    item.append(el('dt',label),el('dd',value??'—'))
+    metrics.append(item)
+  }
+  const engine=el('p',[status.engine?.toUpperCase(),status.executionMode,model].filter(Boolean).join(' · '))
+  engine.className='muted'
+  runtime.append(metrics,engine)
+}
+function render(){
+  const requested=location.hash.slice(1);page=Object.hasOwn(pages,requested)?requested:'overview'
+  $('.head').classList.toggle('overview-head',page==='overview')
+  $('h1').textContent=page==='overview'?'当前角色':pages[page]
+  for(const a of $('nav').children)a.setAttribute('aria-current',a.hash==='#'+page?'page':'false')
+  $('#panels').classList.toggle('dashboard',page==='overview')
+  $('#panels').replaceChildren();if(!snapshot)return
+  const {status:s,config:c,setting,model,scenes,replies,research}=snapshot
+  if(page==='overview'){
+    dashboard(snapshot)
+  }else if(page==='settings'){
+    rows('模型与引擎',[['引擎',s.engine],['主叙事模型',model],['情景行动',s.sceneActionsEnabled?'开启':'关闭']])
+    rows('剧情节奏',[['消息合并（秒）',c.debounce],['拆分气泡',c.split?'开启':'关闭'],['自动推进',c.autoAdvance?'开启':'关闭']])
+  }else if(page==='story'){
+    const form=el('form');form.className='wide';$('#panels').append(form)
+    for(const [key,title] of Object.entries(fields)){const label=el('label',title),input=el(['name','location'].includes(key)?'input':'textarea');input.name=key;input.value=setting[key]??'';input.maxLength=key==='name'?100:4000;input.required=key==='name';label.append(input);form.append(label)}
+    const save=el('button','保存故事设定');save.className='save';form.append(save);form.oninput=()=>{dirty=true;notice('有尚未保存的修改')}
+    form.onsubmit=async e=>{e.preventDefault();if(busy)return;const patch=Object.fromEntries([...new FormData(form)].filter(([k,v])=>v!==(setting[k]??'')));if(!Object.keys(patch).length){dirty=false;notice('设定没有变化');return}save.disabled=true;form.inert=true;try{await load(patch)}finally{form.inert=false;save.disabled=false}}
+  }else if(page==='desk'){entries('近期网页观察',research,'当前故事尚无 HDSI 网页观察记录。')}
+  else if(page==='actions'){entries('最近送达的气泡',replies,'尚无已送达的气泡。')}
+  else{rows('近期剧本',[['条目下限',c.contextEntries],['保护时间窗（分钟）',c.contextMinutes]]);rows('主叙事输出',[['最大输出 Token',c.outputTokens]])}
+}
+async function load(patch){
+  if(busy)return;busy=true;$('#refresh').disabled=true
+  try{
+    const headers=token?{Authorization:'Bearer '+token}:{}
+    if(patch)headers['Content-Type']='application/json'
+    const r=await fetch(patch?'/workbench/story':'/workbench/data',{method:patch?'PATCH':'GET',headers,body:patch?JSON.stringify(patch):undefined,cache:'no-store'})
+    if(r.status===401){$('#login').hidden=false;notice('请输入服务访问令牌');return}
+    if(!r.ok)throw Error('请求失败（HTTP '+r.status+'）')
+    snapshot=await r.json();dirty=false;$('#login').hidden=true;notice(patch?'故事设定已保存':'');render()
+  }catch(e){notice(e.message)}finally{busy=false;$('#refresh').disabled=false}
+}
+$('#refresh').onclick=()=>{if(allowLeave())load()}
+$('#login').onsubmit=e=>{e.preventDefault();token=$('#login input').value;$('#login input').value='';load()}
+window.onhashchange=()=>{if(dirty&&!allowLeave()){history.replaceState(null,'','#'+page);return}dirty=false;render()}
+render();load()
+</script></body></html>
