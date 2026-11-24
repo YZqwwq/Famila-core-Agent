@@ -10,7 +10,7 @@ Famila 要让外界发生的事成为她在这个世界里能经历的事。用�
 
 独立运行的 TypeScript Agent Harness，以 Node.js 运行，Fastify 提供服务入口。现在可以选择 HDSI 原生会话引擎，或从 `worldEdit-agent` 提取的 LangGraph 执行引擎。新 `.env.example` 选择 HDSI；没有指定引擎的程序化调用保留 LangGraph 兼容行为。
 
-HDSI 路径运行完整上游会话服务。当前默认 `FAMILA_HDSI_MODE=native`，保留逐轮叙事与状态更新；此前快版会跳过过期叙事附带的情绪更新，未通过行为保真验证，只保留为显式 `fast` 试验模式。角色档案使用最小设定，没有加入之前迁移的人格文案。原 LangGraph 路径保留工具、任务和记忆能力。两套引擎不会同时消费同一消息，数据也各自隔离。见 [行为对照验证](docs/hdsi-behavior-validation.md)与[HDSI 接入说明](docs/hdsi-integration.md)。
+HDSI 路径运行完整上游会话服务。当前默认 `FAMILA_HDSI_MODE=native`，保留逐轮叙事与状态更新；此前快版会跳过过期叙事附带的情绪更新，未通过行为保真验证，只保留为显式 `fast` 试验模式。新故事从 src/runtime/hdsi/persona.ts 读取 Famila 的初始角色和关系设定，已有故事沿用自己的档案。原 LangGraph 路径保留工具、任务和记忆能力。两套引擎不会同时消费同一消息，数据也各自隔离。见 [行为对照验证](docs/hdsi-behavior-validation.md)与[HDSI 接入说明](docs/hdsi-integration.md)。
 
 当前支持一个宿主实例、一个持久 Agent 身份；HDSI 会话运行在子进程中。CLI 和 HTTP 服务是两种启动方式，不要同时使用同一个数据目录。WorldEdit 原项目保持原样，本轮不设计或接入应用接口契约。
 
@@ -18,7 +18,7 @@ HDSI 路径运行完整上游会话服务。当前默认 `FAMILA_HDSI_MODE=nativ
 
 ## HDSI 对话数据库
 
-HTTP、CLI 和 HDSI 程序入口默认使用远程测试库。开发环境使用 `FAMILA_DB_ENV=test`，正式服务显式设置 `FAMILA_DB_ENV=prod`。两个环境分别读取 `FAMILA_TEST_PG_*` 和 `FAMILA_PROD_PG_*`，共享 `FAMILA_PG_CA_FILE`。启动时客户端验证证书和主机身份，在对应库的 `famila` schema 创建表。每个库同一时间支持一个活动会话服务。
+本地开发连接测试库。线上 QQ 和未来的 App 用户入口只连接正式库。正式服务设置 NODE_ENV=production，启动时会检查数据库环境。开发环境使用 `FAMILA_DB_ENV=test`，正式服务显式设置 `FAMILA_DB_ENV=prod`。两个环境分别读取 `FAMILA_TEST_PG_*` 和 `FAMILA_PROD_PG_*`，共享 `FAMILA_PG_CA_FILE`。启动时客户端验证证书和主机身份，在对应库的 `famila` schema 创建表。每个库同一时间支持一个活动会话服务。
 
 消息队列、回复、HDSI 故事与记忆、笔记和编辑器状态均按库保存。首次接入从该库现有状态开始，旧 SQLite 文件保留在原目录。离线回归与需要全新身份的对照实验显式使用 `isolatedSqlite`。运行 `npm run build` 后，`node scripts/postgres-chat-smoke.cjs` 会用本地模型替身在测试库留下带随机标识的验收对话。
 

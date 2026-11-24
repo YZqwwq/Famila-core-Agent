@@ -4,8 +4,9 @@ import { PostgresDriver } from '@minatojs/driver-postgres'
 
 export type DatabaseStage = 'test' | 'prod'
 
-export function databaseStage(value = process.env.FAMILA_DB_ENV ?? 'test'): DatabaseStage {
+export function databaseStage(value = process.env.FAMILA_DB_ENV ?? (process.env.NODE_ENV === 'production' ? 'prod' : 'test')): DatabaseStage {
   if (value !== 'test' && value !== 'prod') throw new Error('FAMILA_DB_ENV must be test or prod.')
+  if (process.env.NODE_ENV === 'production' && value !== 'prod') throw new Error('Production requires famila_prod.')
   return value
 }
 

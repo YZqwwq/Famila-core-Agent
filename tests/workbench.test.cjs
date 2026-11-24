@@ -17,7 +17,12 @@ test('workbench protects data and persists the current story across restarts', a
     assert.match((await server.inject('/workbench')).body, /当前故事/)
     assert.equal((await server.inject('/workbench/data')).statusCode, 401)
     const before = await server.inject({ url: '/workbench/data', headers })
-    assert.equal(before.json().setting.name, 'Famila')
+    const { familaStoryDefaults } = require('../dist/runtime/hdsi/persona')
+    assert.equal(before.json().setting.name, '法弥拉（Famila）')
+    assert.equal(before.json().setting.profile, familaStoryDefaults.characterProfile)
+    for (const field of ['relationship', 'world', 'style']) {
+      assert.equal(before.json().setting[field], familaStoryDefaults[field])
+    }
     assert.equal(before.json().storyId, null)
     assert.ok(!before.body.includes(options.model.modelKey))
     const save = payload => server.inject({ method: 'PATCH', url: '/workbench/story', headers, payload })

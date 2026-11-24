@@ -1,3 +1,4 @@
+import { familaStoryDefaults } from './persona'
 import { resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { Context } from 'koishi'
@@ -68,8 +69,7 @@ async function start(input: any) {
         typingMaxDelaySeconds: 0, typingJitterRatio: 0, splitReplyMessages: false } : {}),
       narrativeRetryMaxAttempts: 0, sweepIntervalMinutes: 60 },
     memory: { backgroundIntervalMinutes: 60 },
-    storyDefaults: { characterName: 'Famila', characterProfile: '一位用中文交流的成年人。',
-      relationship: '与用户日常聊天。', world: '当代日常生活。', location: '家中' },
+    storyDefaults: familaStoryDefaults,
     logging: { level: 'warn' }
   })
   let initialized!: () => void
@@ -177,6 +177,26 @@ process.on('message', (message: any) => {
         service.config.runtime.contextEntryLimit = 1
         service.config.runtime.contextTimeWindowMinutes = 0
         return { contextEntryLimit: 1, contextTimeWindowMinutes: 0 }
+      }
+      if (message.command === 'page-observation') {
+        const [source] = await app.database.get('interlude_script_entry' as any, {
+          kind: 'user-message', 'metadata.messageId': message.sourceId
+        }) as any[]
+        if (!source) throw new Error('Missing initiating message')
+        const story = await service.getStory(source.storyId)
+        const now = new Date()
+        await service.serial(story.id, async () => {
+          await service.appendEntry(story.id, { kind: 'world-event', actor: 'system',
+            content: message.observation, occurredAt: now.toISOString(),
+            metadata: { sourceEntryId: source.id } }, now, source.participantId)
+          await service.appendIntent(story.id, { type: 'page-observation', summary: message.observation,
+            notBefore: new Date(now.getTime() + 1).toISOString(),
+            payload: { userInitiated: true, sourceEntryIds: [source.id], traceId: message.sourceId } }, now, source.participantId)
+        })
+        await new Promise(resolve => setTimeout(resolve, 2))
+        const drafts = await service.advanceStory(story, false)
+        if (drafts.length) await service.sendScheduledMessages(story, drafts.map((draft: any) => ({ ...draft, traceId: message.sourceId })))
+        return { outgoing: drafts.length }
       }
       if (message.command === 'compact') {
         const stories = await app.database.get('interlude_story' as any, {}) as any[]

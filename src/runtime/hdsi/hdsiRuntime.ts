@@ -283,6 +283,11 @@ export class HdsiRuntime implements AgentRuntime {
     if (!this.execution.evaluation) throw new Error('Evaluation access is disabled.')
     return this.workerQuery({ type: 'famila-evaluation', command })
   }
+  async observeTestPage(requestId: string, observation: string) {
+    if (!this.execution.evaluation || !this.execution.isolatedSqlite) throw new Error('Requires isolated evaluation.')
+    return this.workerQuery({ type: 'famila-evaluation', command: 'page-observation',
+      sourceId: 'famila-' + hash(requestId).slice(0, 40), observation })
+  }
   async workbench(patch?: Record<string, string>) {
     const snapshot = await this.workerQuery({ type: 'famila-workbench', patch })
     return { ...snapshot, status: this.getStatus(), model: this.options.model?.model,
