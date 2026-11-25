@@ -56,6 +56,9 @@ export class HdsiRuntime implements AgentRuntime {
   constructor(private readonly options: FamilaCoreOptions, private readonly execution: HdsiExecutionOptions = { mode: 'native' }) {
     if (execution.isolatedSqlite && execution.databaseStage) throw new Error('Choose one HDSI storage backend.')
     if (!execution.isolatedSqlite) this.execution = { ...execution, databaseStage: databaseStage(execution.databaseStage) }
+    if (execution.evaluation && (process.env.NODE_ENV === 'production' || this.execution.databaseStage === 'prod')) {
+      throw new Error('Evaluation is unavailable in production.')
+    }
     if (execution.mode && !['native', 'fast'].includes(execution.mode)) throw new Error('HDSI mode must be native or fast.')
     if (execution.sceneActions && execution.mode === 'fast') throw new Error('Scene actions require native HDSI execution.')
     if (options.dataSource || options.databasePath) throw new Error('HDSI owns its database; supply dataDirectory only.')
@@ -284,7 +287,9 @@ export class HdsiRuntime implements AgentRuntime {
     return this.workerQuery({ type: 'famila-evaluation', command })
   }
   async observeTestPage(requestId: string, observation: string) {
-    if (!this.execution.evaluation || !this.execution.isolatedSqlite) throw new Error('Requires isolated evaluation.')
+    if (!this.execution.evaluation || this.execution.databaseStage !== 'test' || this.execution.isolatedSqlite || process.env.NODE_ENV === 'production') {
+      throw new Error('Requires local evaluation against famila_test.')
+    }
     return this.workerQuery({ type: 'famila-evaluation', command: 'page-observation',
       sourceId: 'famila-' + hash(requestId).slice(0, 40), observation })
   }

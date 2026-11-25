@@ -14,7 +14,7 @@ const recoveryReceipts = new Map<string, (ids: string[]) => void>()
 let app: Context, service: any, dispose: (() => void) | undefined, timer: ReturnType<typeof setInterval>
 let ready = false, stopping = false
 let drainRequested = false
-let evaluationEnabled = false, evaluationBusy = 0
+let evaluationEnabled = false, pageObservationEnabled = false, evaluationBusy = 0
 const publish = (message: unknown) => { if (process.connected) rawSend(message) }
 
 // Observe upstream bridge acknowledgements; retain its protocol and delivery path.
@@ -48,6 +48,10 @@ async function start(input: any) {
   const execution = input.execution ?? {}
   upstream = require(execution.upstreamBundle ?? resolve(__dirname, '../../hdsi/upstream.cjs'))
   evaluationEnabled = execution.evaluation === true
+  if (evaluationEnabled && (execution.databaseStage === 'prod' || process.env.NODE_ENV === 'production')) {
+    throw new Error('Evaluation is unavailable in production.')
+  }
+  pageObservationEnabled = evaluationEnabled && execution.databaseStage === 'test'
   const fast = execution.mode === 'fast'
   const normalizedTransport = evaluationEnabled && execution.normalizedTransport === true
   const model = input.model
@@ -179,6 +183,7 @@ process.on('message', (message: any) => {
         return { contextEntryLimit: 1, contextTimeWindowMinutes: 0 }
       }
       if (message.command === 'page-observation') {
+        if (!pageObservationEnabled) throw new Error('Page observation requires famila_test.')
         const [source] = await app.database.get('interlude_script_entry' as any, {
           kind: 'user-message', 'metadata.messageId': message.sourceId
         }) as any[]

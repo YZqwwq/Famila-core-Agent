@@ -47,6 +47,7 @@
   },
   "scripts": {
     "test:companion": "node scripts/companion-eval.cjs",
+    "test:search": "node scripts/delayed-search-live.cjs",
     "build": "tsc -p tsconfig.json && tsc-alias -p tsconfig.json && node scripts/build-hdsi.cjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node scripts/test.cjs",

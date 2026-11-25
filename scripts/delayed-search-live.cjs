@@ -2,16 +2,25 @@ const fs = require('node:fs')
 const path = require('node:path')
 const assert = require('node:assert/strict')
 const { createServer } = require('node:http')
+const { randomUUID, createHash } = require('node:crypto')
 const { setTimeout: sleep } = require('node:timers/promises')
+const { Client } = require('pg')
 const { startHdsiRuntime } = require('../dist/runtime/hdsi/hdsiRuntime')
 const { loadRuntimeConfig } = require('../dist/runtime/config')
+const { databaseStage, postgresConfig } = require('../dist/runtime/hdsi/postgres')
 
 async function main() {
   const model = loadRuntimeConfig().core.model
-  const grounded = process.argv.includes('--grounded')
-  const notify = grounded || process.argv.includes('--notify')
+  assert.equal(databaseStage(), 'test', '延时搜索验收只允许连接远端 famila_test')
+  assert.notEqual(process.env.NODE_ENV, 'production', '验收进程必须在本地开发环境运行')
+  // Current page contents are authoritative in every acceptance run.
+  const grounded = true
+  const notify = true
+  const runId = randomUUID()
+  const searchId = 'delayed-search-' + runId
+  const preferenceId = 'delayed-preference-' + runId
   const start = Date.now()
-  const dir = path.resolve('evals/companion_zh/reports', 'delayed-search-' + start)
+  const dir = path.resolve('evals/companion_zh/reports', 'delayed-search-' + runId)
   fs.mkdirSync(dir, { recursive: true })
   const log = []
   const record = (type, data) => {
@@ -19,7 +28,11 @@ async function main() {
     fs.writeFileSync(path.join(dir, 'timeline.json'), JSON.stringify(log, null, 2))
   }
   const report = path.join(dir, 'scenes.md')
-  fs.writeFileSync(report, '# 延时搜索实验\n\n模型：' + model.model + '。本地原生 HDSI；展览与搜索页数据为实验虚构。\n')
+  const summary = { runId, database: 'famila_test', backend: 'postgres', model: model.model,
+    requestIds: [searchId, preferenceId], status: 'pending' }
+  const saveSummary = () => fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(summary, null, 2))
+  saveSummary()
+  fs.writeFileSync(report, '# 延时搜索实验\n\n模型：' + model.model + '。本地原生 HDSI 连接远端 PostgreSQL famila_test；展览与搜索页数据为实验虚构。\n\n运行编号：' + runId + '\n')
   console.log(report)
   let calls = 0
   const proxy = createServer(async (req, res) => {
@@ -82,26 +95,62 @@ async function main() {
     scenes.push({ label, scripts, bubbles })
     console.log(label, scripts.length, 'scripts;', bubbles.length, 'bubbles')
     assert.ok(scripts.length, '原生内核没有提交本幕')
+    if (launched && Date.now() - launched < 90000) {
+      assert.ok(!/蓝线|纸月|白石|远山仓库/.test(bubbles.map(e => e.content).join(' ')), '网页未加载完成就提前透露本轮搜索结果')
+    }
   }
   try {
     runtime = await startHdsiRuntime({ dataDirectory: dir, model: { ...model, modelKey:'local', baseURL:'http://127.0.0.1:' + proxy.address().port } },
-      { mode:'native', evaluation:true, isolatedSqlite:true, normalizedTransport:true, sceneActions:{ tools } })
+      { mode:'native', evaluation:true, databaseStage:'test', normalizedTransport:true, sceneActions:{ tools } })
+    const baseline = await runtime.evaluate('snapshot')
+    lastEntry = Math.max(0, ...baseline.interlude_script_entry.map(e => e.id))
+    delivered = (await runtime.getHistory()).replies.length
+    record('本轮起始水位', { lastEntry, delivered, database: 'famila_test' })
     const first = '帮我用浏览器搜一下，周六晚上杭州有什么展可以逛？' + (notify ? '我现在在订行程，搜到就告诉我，我等着。' : '')
-    await stage('第一幕 · 发起搜索', first, () => runtime.sendMessage({requestId:'search',text:first}))
+    await stage('第一幕 · 发起搜索', first, () => runtime.sendMessage({requestId:searchId,text:first}))
     assert.ok(launched, '本次没有实际启动工具')
     const extra = '对了，我那天不想走太远，最好离地铁近一点。'
-    await stage('第二幕 · 加条件', extra, () => runtime.sendMessage({requestId:'preference',text:extra}))
+    await stage('第二幕 · 加条件', extra, () => runtime.sendMessage({requestId:preferenceId,text:extra}))
     assert.ok(Date.now()-launched < 90000, '第二幕未在结果到达前完成')
     await sleep(Math.max(0, launched+40000-Date.now()))
     if (Date.now()-launched < 90000) {
       const pending = '浏览器页面仍显示加载中，距离提交已过了一会儿，目前没有任何展讯。'
-      await stage('第三幕 · 等待提醒',pending,()=>runtime.observeTestPage('search',pending))
+      await stage('第三幕 · 等待提醒',pending,()=>runtime.observeTestPage(searchId,pending))
     }
     await ready
-    await stage('第四幕 · 页面返回',result,()=>runtime.observeTestPage('search',result))
+    await stage('第四幕 · 页面返回',result,()=>runtime.observeTestPage(searchId,result))
     const last = scenes.at(-1)
     const text = last.bubbles.map(e=>e.content).join(' ')
-    record('验收', { secondBeforeResult:true, finalVisibleNear:/蓝线|纸月/.test(text) && /地铁|3分钟|三分钟/.test(text), calls })
-  } finally { clearTimeout(timer); await runtime?.close(); proxy.closeAllConnections(); await new Promise(ok=>proxy.close(ok)) }
+    const finalVisibleNear = /蓝线|纸月/.test(text) && /地铁|3分钟|三分钟/.test(text)
+    record('验收', { secondBeforeResult:true, finalVisibleNear, calls })
+    assert.ok(finalVisibleNear, '结果返回后没有结合地铁条件推荐近的展览')
+    const { connection, connect_timeout, ...config } = postgresConfig('test')
+    const client = new Client({ ...config, connectionTimeoutMillis: 8000 })
+    try {
+      await client.connect()
+      const requests = await client.query('SELECT client_id, status FROM famila.inbox WHERE client_id=ANY($1::text[])', [[searchId, preferenceId]])
+      assert.equal(requests.rows.length, 2, '远端测试库缺少本轮消息')
+      assert.ok(requests.rows.every(row => row.status === 'completed'), '远端消息未完成')
+      const sourceId = 'famila-' + createHash('sha256').update(searchId).digest('hex').slice(0, 40)
+      const observations = await client.query(`SELECT count(*)::int AS n FROM famila.interlude_script_entry e
+        WHERE e.kind='world-event' AND e.metadata->>'sourceEntryId' IN
+        (SELECT id::text FROM famila.interlude_script_entry WHERE kind='user-message' AND metadata->>'messageId'=$1)`, [sourceId])
+      assert.ok(observations.rows[0].n >= 1, '页面结果未存入远端测试库')
+      const replies = await client.query('SELECT content FROM famila.outbox WHERE inbox_id=$1 ORDER BY created,rowid', [sourceId])
+      assert.ok(replies.rows.some(row => /蓝线|纸月/.test(row.content)), '远端发件箱缺少最终推荐')
+      summary.remoteRecords = { requests: requests.rows.length, observations: observations.rows[0].n, replies: replies.rows.length }
+    } finally { await client.end() }
+    summary.status = 'ok'
+  } catch (error) {
+    summary.status = 'failed'
+    let message = error.message
+    for (const [key, value] of Object.entries(process.env)) if (/KEY|TOKEN|PASSWORD|SECRET/i.test(key) && value) message = message.split(value).join('[redacted]')
+    summary.error = message
+    throw new Error(message)
+  } finally {
+    clearTimeout(timer)
+    try { await runtime?.close() }
+    finally { proxy.closeAllConnections(); await new Promise(ok=>proxy.close(ok)); summary.calls = calls; summary.durationMs = Date.now()-start; saveSummary() }
+  }
 }
 main().catch(e=>{console.error(e.message);process.exitCode=1})

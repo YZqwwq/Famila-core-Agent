@@ -20,7 +20,7 @@ HDSI 路径运行完整上游会话服务。当前默认 `FAMILA_HDSI_MODE=nativ
 
 本地开发连接测试库。线上 QQ 和未来的 App 用户入口只连接正式库。正式服务设置 NODE_ENV=production，启动时会检查数据库环境。开发环境使用 `FAMILA_DB_ENV=test`，正式服务显式设置 `FAMILA_DB_ENV=prod`。两个环境分别读取 `FAMILA_TEST_PG_*` 和 `FAMILA_PROD_PG_*`，共享 `FAMILA_PG_CA_FILE`。启动时客户端验证证书和主机身份，在对应库的 `famila` schema 创建表。每个库同一时间支持一个活动会话服务。
 
-消息队列、回复、HDSI 故事与记忆、笔记和编辑器状态均按库保存。首次接入从该库现有状态开始，旧 SQLite 文件保留在原目录。离线回归与需要全新身份的对照实验显式使用 `isolatedSqlite`。运行 `npm run build` 后，`node scripts/postgres-chat-smoke.cjs` 会用本地模型替身在测试库留下带随机标识的验收对话。
+消息队列、回复、HDSI 故事与记忆、笔记和编辑器状态均按库保存。正式实现与验收必须由本地进程连接远端 `famila_test`，不以 SQLite 结果替代。首次接入从该库现有状态开始，旧 SQLite 文件保留在原目录。SQLite 仅用于离线单元回归或明确标注的历史对照实验。运行 `npm run build` 后，`node scripts/postgres-chat-smoke.cjs` 和 `npm run test:search` 顺序执行，分别验收 PostgreSQL 对话持久化与延时搜索。见[开发规范](docs/development.md)。
 
 ## 启动
 
